@@ -11,6 +11,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     let layer: CALayer
     private let content: CALayer
     private let numberLabel: CATextLayer
+    private let idleDot: CALayer
+    private var lastSignificantChangeAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private var stream: SCStream?
     private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInteractive)
 
@@ -33,8 +35,15 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         inner.masksToBounds = true
         outer.addSublayer(inner)
 
+        let dot = CALayer()
+        dot.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        dot.cornerRadius = 5
+        dot.opacity = 0
+        inner.addSublayer(dot)
+
         let label = CATextLayer()
         label.alignmentMode = .center
+        label.truncationMode = .end
         label.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
         label.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
         label.cornerRadius = 6
@@ -48,11 +57,28 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         self.layer = outer
         self.content = inner
         self.numberLabel = label
+        self.idleDot = dot
+        self.windowTitle = scWindow.title ?? ""
         super.init()
     }
 
+    private let windowTitle: String
+    private var currentNumber: Int?
+
     func setNumber(_ n: Int?) {
-        numberLabel.string = n.map { "\($0)" } ?? ""
+        currentNumber = n
+        updateLabel()
+    }
+
+    private func updateLabel() {
+        let trimmed = windowTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (currentNumber, trimmed.isEmpty) {
+        case (nil, true): numberLabel.string = ""
+        case (nil, false): numberLabel.string = trimmed
+        case (let n?, true): numberLabel.string = "\(n)"
+        case (let n?, false): numberLabel.string = "\(n) — \(trimmed)"
+        }
+        layoutLabel()
     }
 
     func setFrame(_ rect: CGRect) {
@@ -60,13 +86,41 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         let local = CGRect(origin: .zero, size: rect.size)
         content.frame = local
         layer.shadowPath = CGPath(roundedRect: local, cornerWidth: 10, cornerHeight: 10, transform: nil)
-        let badge = CGSize(width: 22, height: 18)
+        layoutLabel()
+        let dotSize: CGFloat = 10
         let inset: CGFloat = 8
+        idleDot.frame = CGRect(
+            x: rect.size.width - dotSize - inset,
+            y: rect.size.height - dotSize - inset,
+            width: dotSize,
+            height: dotSize
+        )
+    }
+
+    private func layoutLabel() {
+        let rect = layer.bounds
+        guard rect.width > 0 else { return }
+        let badgeHeight: CGFloat = 18
+        let inset: CGFloat = 8
+        let hPad: CGFloat = 8
+        let text = (numberLabel.string as? String) ?? ""
+        let maxWidth = max(22, rect.size.width - inset * 2)
+        let width: CGFloat
+        if text.isEmpty {
+            width = 0
+        } else {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: numberLabel.font as? NSFont ?? NSFont.systemFont(ofSize: 12, weight: .semibold)
+            ]
+            let textWidth = (text as NSString).size(withAttributes: attrs).width
+            width = min(maxWidth, ceil(textWidth) + hPad * 2)
+        }
+        numberLabel.isHidden = text.isEmpty
         numberLabel.frame = CGRect(
             x: inset,
-            y: rect.size.height - badge.height - inset,
-            width: badge.width,
-            height: badge.height
+            y: rect.size.height - badgeHeight - inset,
+            width: width,
+            height: badgeHeight
         )
     }
 
@@ -129,12 +183,43 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         guard type == .screen, sampleBuffer.isValid,
               let pixelBuffer = sampleBuffer.imageBuffer,
               let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else { return }
+
+        if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+           let attachments = attachmentsArray.first {
+            let dirtyRectsRaw = attachments[.dirtyRects] as? [[String: Any]] ?? []
+            var dirtyArea: CGFloat = 0
+            for d in dirtyRectsRaw {
+                if let r = CGRect(dictionaryRepresentation: d as CFDictionary) {
+                    dirtyArea += r.width * r.height
+                }
+            }
+            var totalArea: CGFloat = 0
+            if let crDict = attachments[.contentRect] as? [String: Any],
+               let cr = CGRect(dictionaryRepresentation: crDict as CFDictionary) {
+                totalArea = cr.width * cr.height
+            }
+            if totalArea > 0, dirtyArea / totalArea > 0.005 {
+                lastSignificantChangeAt = CFAbsoluteTimeGetCurrent()
+            }
+        }
+
         DispatchQueue.main.async { [content] in
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             content.contents = surface
             CATransaction.commit()
         }
+    }
+
+    func updateActivity(now: CFAbsoluteTime, threshold: CFTimeInterval) {
+        let elapsed = now - lastSignificantChangeAt
+        let isIdle = elapsed > threshold
+        let target: Float = isIdle ? 1 : 0
+        guard idleDot.opacity != target else { return }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.25)
+        idleDot.opacity = target
+        CATransaction.commit()
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

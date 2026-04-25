@@ -43,6 +43,7 @@ final class Overlay {
     }
 
     private var workspaceObserver: NSObjectProtocol?
+    private var activityTimer: Timer?
 
     init(tracker: SpaceTracker) {
         self.tracker = tracker
@@ -92,7 +93,22 @@ final class Overlay {
         prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         prevFrontTitle = focusedWindowTitle(pid: prevFrontPID) ?? ""
         visible = true
+        startActivityTimer()
         Task { await prepareAndShow() }
+    }
+
+    private func startActivityTimer() {
+        activityTimer?.invalidate()
+        activityTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let now = CFAbsoluteTimeGetCurrent()
+            for t in self.allTiles { t.updateActivity(now: now, threshold: 1.5) }
+        }
+    }
+
+    private func stopActivityTimer() {
+        activityTimer?.invalidate()
+        activityTimer = nil
     }
 
     private func focusedWindowTitle(pid: pid_t) -> String? {
@@ -266,6 +282,7 @@ final class Overlay {
 
     private func hide() {
         let toStop = allTiles
+        stopActivityTimer()
         window?.orderOut(nil)
         visible = false
         if prevFrontPID != 0,
