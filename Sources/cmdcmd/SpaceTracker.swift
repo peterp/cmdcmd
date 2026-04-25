@@ -15,6 +15,15 @@ func CGSGetActiveSpace(_ cid: CGSConnectionID) -> CGSSpaceID
 @_silgen_name("CGSCopySpacesForWindows")
 func CGSCopySpacesForWindows(_ cid: CGSConnectionID, _ mask: Int32, _ windows: CFArray) -> CFArray
 
+@_silgen_name("CGSManagedDisplaySetCurrentSpace")
+func CGSManagedDisplaySetCurrentSpace(_ cid: CGSConnectionID, _ display: CFString, _ space: CGSSpaceID)
+
+@_silgen_name("CGSAddWindowsToSpaces")
+func CGSAddWindowsToSpaces(_ cid: CGSConnectionID, _ windows: CFArray, _ spaces: CFArray)
+
+@_silgen_name("CGSRemoveWindowsFromSpaces")
+func CGSRemoveWindowsFromSpaces(_ cid: CGSConnectionID, _ windows: CFArray, _ spaces: CFArray)
+
 enum SpaceType: Int {
     case user = 0
     case fullscreen = 4
@@ -96,6 +105,69 @@ final class SpaceTracker {
                 bounds: bounds,
                 spaceID: spaceMap[id]
             )
+        }
+    }
+
+    func fullscreenWindowSpaces() -> [CGWindowID: CGSSpaceID] {
+        let fsIDs = Set(spaces().filter { $0.type == .fullscreen }.map { $0.id })
+        guard !fsIDs.isEmpty else { return [:] }
+
+        guard let raw = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { return [:] }
+        let ids = raw.compactMap { $0[kCGWindowNumber as String] as? CGWindowID }
+
+        var result: [CGWindowID: CGSSpaceID] = [:]
+        for id in ids {
+            let arr = [NSNumber(value: id)] as CFArray
+            let spacesArr = CGSCopySpacesForWindows(cid, 0x7, arr)
+            if let nums = spacesArr as? [NSNumber],
+               let match = nums.first(where: { fsIDs.contains($0.uint64Value) }) {
+                result[id] = match.uint64Value
+            }
+        }
+        return result
+    }
+
+    func activeSpace() -> CGSSpaceID {
+        CGSGetActiveSpace(cid)
+    }
+
+    func orderedSpaceIDs() -> [CGSSpaceID] {
+        guard let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] else { return [] }
+        var result: [CGSSpaceID] = []
+        for display in displays {
+            guard let spaces = display["Spaces"] as? [[String: Any]] else { continue }
+            for space in spaces {
+                if let id = space["id64"] as? UInt64 { result.append(id) }
+            }
+        }
+        return result
+    }
+
+    func addWindows(_ windowIDs: [CGWindowID], toSpace spaceID: CGSSpaceID) {
+        guard !windowIDs.isEmpty else { return }
+        let wins = windowIDs.map { NSNumber(value: $0) } as CFArray
+        let spaces = [NSNumber(value: spaceID)] as CFArray
+        CGSAddWindowsToSpaces(cid, wins, spaces)
+    }
+
+    func removeWindows(_ windowIDs: [CGWindowID], fromSpace spaceID: CGSSpaceID) {
+        guard !windowIDs.isEmpty else { return }
+        let wins = windowIDs.map { NSNumber(value: $0) } as CFArray
+        let spaces = [NSNumber(value: spaceID)] as CFArray
+        CGSRemoveWindowsFromSpaces(cid, wins, spaces)
+    }
+
+    func switchTo(spaceID: CGSSpaceID) {
+        guard let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] else { return }
+        for display in displays {
+            guard
+                let displayUUID = display["Display Identifier"] as? String,
+                let spaces = display["Spaces"] as? [[String: Any]]
+            else { continue }
+            if spaces.contains(where: { ($0["id64"] as? UInt64) == spaceID }) {
+                CGSManagedDisplaySetCurrentSpace(cid, displayUUID as CFString, spaceID)
+                return
+            }
         }
     }
 

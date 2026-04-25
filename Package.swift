@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "yondery",
+    name: "cmdcmd",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "yondery",
+            name: "cmdcmd",
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ScreenCaptureKit"),

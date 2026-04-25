@@ -1,15 +1,31 @@
 import AppKit
 import Carbon.HIToolbox
+import CoreGraphics
+import ScreenCaptureKit
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.finishLaunching()
 
+_ = CGRequestScreenCaptureAccess()
+Task {
+    _ = try? await SCShareableContent.current
+}
+
 let tracker = SpaceTracker()
-let overlay = Overlay()
+let overlay = Overlay(tracker: tracker)
 let hotkey = Hotkey(keyCode: UInt32(kVK_ANSI_Y), modifiers: cmdShift) {
     overlay.toggle()
     dumpState(tracker: tracker)
+}
+
+let chord = CmdChord {
+    overlay.toggle()
+    dumpState(tracker: tracker)
+}
+
+let swipe = SwipeMonitor {
+    DispatchQueue.main.async { overlay.toggle() }
 }
 
 dumpState(tracker: tracker)
