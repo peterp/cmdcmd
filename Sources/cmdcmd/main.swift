@@ -24,10 +24,6 @@ let chord = CmdChord {
     dumpState(tracker: tracker)
 }
 
-let swipe = SwipeMonitor {
-    DispatchQueue.main.async { overlay.toggle() }
-}
-
 dumpState(tracker: tracker)
 
 func dumpState(tracker: SpaceTracker) {
