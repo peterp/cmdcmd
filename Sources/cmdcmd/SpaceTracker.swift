@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 typealias CGSConnectionID = UInt32
 typealias CGSSpaceID = UInt64
@@ -23,6 +24,51 @@ func CGSAddWindowsToSpaces(_ cid: CGSConnectionID, _ windows: CFArray, _ spaces:
 
 @_silgen_name("CGSRemoveWindowsFromSpaces")
 func CGSRemoveWindowsFromSpaces(_ cid: CGSConnectionID, _ windows: CFArray, _ spaces: CFArray)
+
+@_silgen_name("CGSHWCaptureWindowList")
+func CGSHWCaptureWindowList(
+    _ cid: CGSConnectionID,
+    _ windowList: UnsafePointer<CGWindowID>,
+    _ windowCount: Int32,
+    _ options: UInt32
+) -> Unmanaged<CFArray>?
+
+private typealias GetWindowLayerContextFn = @convention(c) (CGSConnectionID, CGWindowID) -> UInt32
+private let getWindowLayerContext: GetWindowLayerContextFn? = {
+    guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "SLSGetWindowLayerContext") else {
+        return nil
+    }
+    return unsafeBitCast(sym, to: GetWindowLayerContextFn.self)
+}()
+
+private typealias SetWindowTransformFn = @convention(c) (CGSConnectionID, CGWindowID, CGAffineTransform) -> Int32
+private let setWindowTransformFn: SetWindowTransformFn? = {
+    guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "SLSSetWindowTransform") else {
+        return nil
+    }
+    return unsafeBitCast(sym, to: SetWindowTransformFn.self)
+}()
+
+private typealias TxnCreateFn = @convention(c) (CGSConnectionID) -> OpaquePointer?
+private typealias TxnCommitFn = @convention(c) (OpaquePointer, Int32) -> Int32
+private typealias TxnSetWindowTransformFn = @convention(c) (OpaquePointer, CGWindowID, Int32, Int32, CGAffineTransform) -> Int32
+
+private func loadSym<T>(_ name: String, _ type: T.Type) -> T? {
+    guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), name) else { return nil }
+    return unsafeBitCast(sym, to: T.self)
+}
+
+private let txnCreate: TxnCreateFn? = loadSym("SLSTransactionCreate", TxnCreateFn.self)
+private let txnCommit: TxnCommitFn? = loadSym("SLSTransactionCommit", TxnCommitFn.self)
+private let txnSetWindowTransform: TxnSetWindowTransformFn? = loadSym("SLSTransactionSetWindowTransform", TxnSetWindowTransformFn.self)
+
+private typealias SetSpacesAnimsFn = @convention(c) (CGSConnectionID, Bool) -> Int32
+private let setSpacesAnimationsEnabled: SetSpacesAnimsFn? = {
+    guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGSSetSpacesAnimationsEnabled") else {
+        return nil
+    }
+    return unsafeBitCast(sym, to: SetSpacesAnimsFn.self)
+}()
 
 enum SpaceType: Int {
     case user = 0
@@ -155,6 +201,51 @@ final class SpaceTracker {
         let wins = windowIDs.map { NSNumber(value: $0) } as CFArray
         let spaces = [NSNumber(value: spaceID)] as CFArray
         CGSRemoveWindowsFromSpaces(cid, wins, spaces)
+    }
+
+    func contextID(for windowID: CGWindowID) -> UInt32 {
+        getWindowLayerContext?(cid, windowID) ?? 0
+    }
+
+    func setTransform(windowID: CGWindowID, transform: CGAffineTransform) {
+        applyTransforms([(windowID, transform)])
+    }
+
+    func resetTransform(windowID: CGWindowID) {
+        applyTransforms([(windowID, .identity)])
+    }
+
+    func applyTransforms(_ pairs: [(CGWindowID, CGAffineTransform)]) {
+        guard let create = txnCreate, let setT = txnSetWindowTransform, let commit = txnCommit else {
+            Log.write("transaction API symbols NOT LOADED (create=\(txnCreate != nil) set=\(txnSetWindowTransform != nil) commit=\(txnCommit != nil))")
+            return
+        }
+        guard let txn = create(cid) else {
+            Log.write("SLSTransactionCreate returned nil")
+            return
+        }
+        for (wid, xf) in pairs {
+            let rc = setT(txn, wid, 0, 0, xf)
+            Log.write("txnSetWindowTransform wid=\(wid) a=\(xf.a) tx=\(xf.tx) ty=\(xf.ty) rc=\(rc)")
+        }
+        let rcc = commit(txn, 0)
+        Log.write("txnCommit rc=\(rcc)")
+    }
+
+    func captureBitmap(windowID: CGWindowID) -> CGImage? {
+        var wid = windowID
+        guard let unmanaged = CGSHWCaptureWindowList(cid, &wid, 1, 0x800) else { return nil }
+        let arr = unmanaged.takeRetainedValue()
+        guard CFArrayGetCount(arr) > 0, let ptr = CFArrayGetValueAtIndex(arr, 0) else { return nil }
+        return Unmanaged<CGImage>.fromOpaque(ptr).takeUnretainedValue()
+    }
+
+    func setSpaceAnimations(_ enabled: Bool) {
+        if let fn = setSpacesAnimationsEnabled {
+            _ = fn(cid, enabled)
+        } else {
+            Log.write("CGSSetSpacesAnimationsEnabled NOT loaded")
+        }
     }
 
     func switchTo(spaceID: CGSSpaceID) {

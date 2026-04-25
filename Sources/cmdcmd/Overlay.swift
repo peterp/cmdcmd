@@ -11,8 +11,7 @@ final class Overlay {
     private var isZoomed = false
     private var savedFrames: [CGRect] = []
     private var activeSpaceAtShow: CGSSpaceID = 0
-    private var joinedWindowIDs: [CGWindowID] = []
-    private var joinedSpaceID: CGSSpaceID = 0
+    private var prevFrontPID: pid_t = 0
     private var dragState: DragState?
     private let tracker: SpaceTracker
 
@@ -23,10 +22,10 @@ final class Overlay {
         var moved: Bool
     }
 
-    private var savedOrder: [CGSSpaceID] {
+    private var savedOrder: [CGWindowID] {
         get {
             (UserDefaults.standard.array(forKey: "tileOrder") as? [NSNumber] ?? [])
-                .map { $0.uint64Value }
+                .map { $0.uint32Value }
         }
         set {
             UserDefaults.standard.set(newValue.map { NSNumber(value: $0) }, forKey: "tileOrder")
@@ -43,106 +42,90 @@ final class Overlay {
 
     private func show() {
         activeSpaceAtShow = tracker.activeSpace()
-        let screenFrame = NSScreen.main?.frame ?? .zero
-        let w = window ?? makeWindow(frame: screenFrame)
-        window = w
-        w.setFrame(screenFrame, display: false)
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        if let v = view { w.makeFirstResponder(v) }
+        prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         visible = true
-        Task { await loadTiles() }
+        Task { await prepareAndShow() }
     }
 
-    private func hide() {
-        window?.orderOut(nil)
-        visible = false
-        let toStop = tiles
-        tiles = []
-        selectedIndex = 0
-        isZoomed = false
-        savedFrames = []
-        if !joinedWindowIDs.isEmpty {
-            tracker.removeWindows(joinedWindowIDs, fromSpace: joinedSpaceID)
-            joinedWindowIDs = []
-            joinedSpaceID = 0
-        }
-        Task {
-            for t in toStop { await t.stop() }
-        }
-        if let root = window?.contentView?.layer {
-            root.sublayers?.forEach { $0.removeFromSuperlayer() }
-        }
-    }
-
-    private func loadTiles() async {
-        let content: SCShareableContent
+    private func prepareAndShow() async {
+        let scContent: SCShareableContent?
         do {
-            content = try await SCShareableContent.excludingDesktopWindows(
-                true, onScreenWindowsOnly: false
-            )
+            scContent = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         } catch {
-            print("SCShareableContent failed: \(error)")
-            await MainActor.run { hide() }
-            return
+            Log.write("SCShareableContent failed: \(error)")
+            scContent = nil
+        }
+        let candidates = (scContent?.windows ?? []).filter(Self.isCapturable)
+
+        await MainActor.run {
+            guard visible else { return }
+            let screenFrame = NSScreen.main?.frame ?? .zero
+            let w = window ?? makeWindow(frame: screenFrame)
+            window = w
+            w.setFrame(screenFrame, display: false)
+            w.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            if let v = view { w.makeFirstResponder(v) }
+            installTiles(candidates: candidates)
+        }
+    }
+
+    private func installTiles(candidates: [SCWindow]) {
+        let mcTiles: [Tile] = candidates.compactMap { w -> Tile? in
+            guard let pid = w.owningApplication?.processID else { return nil }
+            return Tile(scWindow: w, ownerPID: pid)
         }
 
-        let fullscreenMap = tracker.fullscreenWindowSpaces()
-        print("SCK: \(content.windows.count) total windows; \(fullscreenMap.count) in fullscreen spaces")
-        let candidates = content.windows.filter { w in
-            fullscreenMap[w.windowID] != nil && Self.isCapturable(w)
-        }
-        print("SCK: \(candidates.count) candidates after filtering")
-        for w in candidates {
-            print("  candidate: \(w.owningApplication?.applicationName ?? "?") title='\(w.title ?? "")' frame=\(w.frame)")
-        }
-        fflush(stdout)
-        let order = tracker.orderedSpaceIDs()
-        let rank = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
-        let sorted = candidates.sorted { a, b in
-            let ra = fullscreenMap[a.windowID].flatMap { rank[$0] } ?? Int.max
-            let rb = fullscreenMap[b.windowID].flatMap { rank[$0] } ?? Int.max
-            return ra < rb
-        }
-        let mcTiles = sorted.compactMap { w -> Tile? in
-            guard let sid = fullscreenMap[w.windowID] else { return nil }
-            return Tile(window: w, spaceID: sid)
-        }
         let saved = savedOrder
         let new: [Tile]
         if saved.isEmpty {
             new = mcTiles
         } else {
-            let knownIDs = Set(saved)
-            let known = saved.compactMap { sid in mcTiles.first(where: { $0.spaceID == sid }) }
-            let unknown = mcTiles.filter { !knownIDs.contains($0.spaceID) }
+            let presentIDs = Set(mcTiles.map { CGWindowID($0.scWindow.windowID) })
+            let knownInOrder = saved.filter { presentIDs.contains($0) }
+            let knownIDs = Set(knownInOrder)
+            let known = knownInOrder.compactMap { wid in mcTiles.first(where: { CGWindowID($0.scWindow.windowID) == wid }) }
+            let unknown = mcTiles.filter { !knownIDs.contains(CGWindowID($0.scWindow.windowID)) }
             new = known + unknown
         }
-        savedOrder = new.map { $0.spaceID }
+        savedOrder = new.map { CGWindowID($0.scWindow.windowID) }
 
-        let inactiveIDs = new.compactMap { $0.spaceID != activeSpaceAtShow ? CGWindowID($0.window.windowID) : nil }
-        if !inactiveIDs.isEmpty {
-            tracker.addWindows(inactiveIDs, toSpace: activeSpaceAtShow)
-            joinedWindowIDs = inactiveIDs
-            joinedSpaceID = activeSpaceAtShow
-            Log.write("joined \(inactiveIDs.count) windows to space \(activeSpaceAtShow)")
+        tiles = new
+        let bounds = window?.contentView?.bounds ?? .zero
+        layoutTiles(in: bounds)
+        for t in new {
+            window?.contentView?.layer?.addSublayer(t.layer)
         }
-
-        await MainActor.run {
-            tiles = new
-            let bounds = window?.contentView?.bounds ?? .zero
-            Log.write("overlay bounds: \(bounds)")
-            layoutTiles(in: bounds)
-            for t in new {
-                window?.contentView?.layer?.addSublayer(t.layer)
+        selectedIndex = 0
+        updateSelection()
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for t in new { group.addTask { await t.start() } }
             }
-            selectedIndex = new.firstIndex(where: { $0.spaceID == activeSpaceAtShow }) ?? 0
-            updateSelection()
-        }
-        await withTaskGroup(of: Void.self) { group in
-            for t in new { group.addTask { await t.start() } }
         }
     }
+
+    private func hide() {
+        let toStop = tiles
+        window?.orderOut(nil)
+        visible = false
+        if prevFrontPID != 0,
+           let app = NSRunningApplication(processIdentifier: prevFrontPID) {
+            app.activate()
+        }
+        prevFrontPID = 0
+        tiles = []
+        selectedIndex = 0
+        Task {
+            for t in toStop { await t.stop() }
+        }
+        isZoomed = false
+        savedFrames = []
+        if let root = window?.contentView?.layer {
+            root.sublayers?.forEach { $0.removeFromSuperlayer() }
+        }
+    }
+
 
     private func pickIndex(_ n: Int) {
         guard tiles.indices.contains(n) else { return }
@@ -213,12 +196,31 @@ final class Overlay {
     private func pick() {
         guard tiles.indices.contains(selectedIndex) else { return }
         let tile = tiles[selectedIndex]
-        let sid = tile.spaceID
-        let pid = tile.window.owningApplication?.processID
+        let pid = tile.ownerPID
+        let title = tile.scWindow.title
+        prevFrontPID = 0
         hide()
-        tracker.switchTo(spaceID: sid)
-        if let pid, let app = NSRunningApplication(processIdentifier: pid) {
+        if let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
+        }
+        if let title, !title.isEmpty {
+            raiseAXWindow(pid: pid, title: title)
+        }
+    }
+
+    private func raiseAXWindow(pid: pid_t, title: String) {
+        let app = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return }
+        for win in windows {
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
+            if let t = titleRef as? String, t == title {
+                AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+                AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
+                return
+            }
         }
     }
 
@@ -272,7 +274,7 @@ final class Overlay {
         if state.moved {
             if let target = tiles.firstIndex(where: { $0 !== tile && $0.layer.frame.contains(point) }) {
                 tiles.swapAt(state.index, target)
-                savedOrder = tiles.map { $0.spaceID }
+                savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
                 selectedIndex = target
             }
             layoutTilesAnimated()
@@ -293,7 +295,7 @@ final class Overlay {
         let target = newRow * cols + newCol
         guard newCol >= 0, newCol < cols, newRow >= 0, target >= 0, target < tiles.count else { return }
         tiles.swapAt(selectedIndex, target)
-        savedOrder = tiles.map { $0.spaceID }
+        savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
         selectedIndex = target
         layoutTilesAnimated()
         updateSelection()
@@ -365,7 +367,8 @@ final class Overlay {
         )
         w.level = .popUpMenu
         w.isOpaque = false
-        w.backgroundColor = NSColor.black.withAlphaComponent(0.75)
+        w.backgroundColor = NSColor.black.withAlphaComponent(0.85)
+        w.isOpaque = false
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let v = OverlayView(frame: frame)
         v.wantsLayer = true
