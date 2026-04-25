@@ -44,6 +44,7 @@ final class Overlay {
 
     private var workspaceObserver: NSObjectProtocol?
     private var activityTimer: Timer?
+    private var hintLayer: CATextLayer?
 
     init(tracker: SpaceTracker) {
         self.tracker = tracker
@@ -229,6 +230,7 @@ final class Overlay {
         focusMode = true
         view?.inFocusMode = true
         updateSelection()
+        updateHint()
 
         if let app = NSRunningApplication(processIdentifier: tile.ownerPID) {
             app.activate()
@@ -250,6 +252,7 @@ final class Overlay {
         focusMode = false
         view?.inFocusMode = false
         updateSelection()
+        updateHint()
         if let m = focusMonitor {
             NSEvent.removeMonitor(m)
             focusMonitor = nil
@@ -261,23 +264,66 @@ final class Overlay {
     }
 
 
-    private func unignoreSelected() {
-        guard tiles.indices.contains(selectedIndex) else { return }
-        let key = tiles[selectedIndex].ignoreKey
-        var set = ignoredKeys
-        guard set.remove(key) != nil else { return }
-        ignoredKeys = set
-        let prev = selectedIndex
-        rebuildDisplayed()
-        selectedIndex = min(prev, max(0, tiles.count - 1))
-        updateSelection()
-        layoutTilesAnimated()
-    }
-
     private func toggleShowIgnored() {
         showIgnored.toggle()
         rebuildDisplayed()
         layoutTilesAnimated()
+        updateHint()
+    }
+
+    private func updateHint() {
+        guard let win = window, let root = win.contentView?.layer else { return }
+        let text: String?
+        if showIgnored {
+            text = "Hidden      ⌘⌫  toggle      esc  exit"
+        } else if focusMode {
+            text = "Focus      ⌘esc  exit"
+        } else {
+            text = nil
+        }
+        if let text {
+            let hint = hintLayer ?? makeHintLayer()
+            if hintLayer == nil {
+                root.addSublayer(hint)
+                hintLayer = hint
+            }
+            hint.string = text
+            hint.isHidden = false
+            layoutHint()
+        } else {
+            hintLayer?.isHidden = true
+        }
+    }
+
+    private func makeHintLayer() -> CATextLayer {
+        let h = CATextLayer()
+        h.alignmentMode = .center
+        h.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        h.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        h.cornerRadius = 10
+        h.masksToBounds = true
+        h.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        h.fontSize = 12
+        h.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        return h
+    }
+
+    private func layoutHint() {
+        guard let hint = hintLayer, let bounds = window?.contentView?.bounds else { return }
+        let text = (hint.string as? String) ?? ""
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: hint.font as? NSFont ?? NSFont.systemFont(ofSize: 12, weight: .medium)
+        ]
+        let textWidth = (text as NSString).size(withAttributes: attrs).width
+        let pad: CGFloat = 18
+        let height: CGFloat = 26
+        let width = ceil(textWidth) + pad * 2
+        hint.frame = CGRect(
+            x: (bounds.width - width) / 2,
+            y: 24,
+            width: width,
+            height: height
+        )
     }
 
     private func hide() {
@@ -296,6 +342,7 @@ final class Overlay {
         showIgnored = false
         focusMode = false
         view?.inFocusMode = false
+        hintLayer?.isHidden = true
         if let m = focusMonitor {
             NSEvent.removeMonitor(m)
             focusMonitor = nil
@@ -308,6 +355,7 @@ final class Overlay {
         if let root = window?.contentView?.layer {
             root.sublayers?.forEach { $0.removeFromSuperlayer() }
         }
+        hintLayer = nil
     }
 
 
@@ -473,13 +521,8 @@ final class Overlay {
 
     private func swapSelected(dx: Int, dy: Int) {
         guard !tiles.isEmpty, !isZoomed else { return }
-        let cols = max(1, gridCols)
-        let row = selectedIndex / cols
-        let col = selectedIndex % cols
-        let newCol = col + dx
-        let newRow = row + dy
-        let target = newRow * cols + newCol
-        guard newCol >= 0, newCol < cols, newRow >= 0, target >= 0, target < tiles.count else { return }
+        let target = selectedIndex + (dx + dy)
+        guard target >= 0, target < tiles.count, target != selectedIndex else { return }
         tiles.swapAt(selectedIndex, target)
         savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
         selectedIndex = target
@@ -568,7 +611,10 @@ final class Overlay {
         let v = OverlayView(frame: frame)
         v.wantsLayer = true
         v.layer?.backgroundColor = .clear
-        v.onEscape = { [weak self] in self?.hide() }
+        v.onEscape = { [weak self] in
+            guard let self else { return }
+            if self.showIgnored { self.toggleShowIgnored() } else { self.hide() }
+        }
         v.onArrow = { [weak self] dx, dy in self?.move(dx: dx, dy: dy) }
         v.onEnter = { [weak self] in self?.pick() }
         v.onSpaceDown = { [weak self] in self?.beginZoom() }
@@ -579,7 +625,6 @@ final class Overlay {
         v.onDigit = { [weak self] n in self?.pickIndex(n - 1) }
         v.onSwap = { [weak self] dx, dy in self?.swapSelected(dx: dx, dy: dy) }
         v.onIgnore = { [weak self] in self?.toggleIgnoreSelected() }
-        v.onUnignore = { [weak self] in self?.unignoreSelected() }
         v.onToggleIgnoredView = { [weak self] in self?.toggleShowIgnored() }
         v.onForwardKey = { [weak self] e in self?.forwardKey(e) }
         v.onEnterFocus = { [weak self] in self?.enterFocusMode() }
@@ -607,7 +652,6 @@ private final class OverlayView: NSView {
     var onDigit: ((Int) -> Void)?
     var onSwap: ((Int, Int) -> Void)?
     var onIgnore: (() -> Void)?
-    var onUnignore: (() -> Void)?
     var onToggleIgnoredView: (() -> Void)?
     var onForwardKey: ((NSEvent) -> Void)?
     var onEnterFocus: (() -> Void)?
@@ -640,8 +684,7 @@ private final class OverlayView: NSView {
         case 124: onArrow?(1, 0); return
         case 125: onArrow?(0, 1); return
         case 126: onArrow?(0, -1); return
-        case 27 where cmd: onIgnore?(); return
-        case 24 where cmd: onUnignore?(); return
+        case 51 where cmd: onIgnore?(); return
         case 34 where cmd: onToggleIgnoredView?(); return
         default: break
         }

@@ -11,6 +11,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     let layer: CALayer
     private let content: CALayer
     private let numberLabel: CATextLayer
+    private let centerLabel: CATextLayer
     private let idleDot: CALayer
     private var lastSignificantChangeAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private var stream: SCStream?
@@ -41,6 +42,20 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         dot.opacity = 0
         inner.addSublayer(dot)
 
+        let center = CATextLayer()
+        center.alignmentMode = .center
+        center.truncationMode = .end
+        center.foregroundColor = NSColor.white.cgColor
+        center.backgroundColor = NSColor(white: 0.13, alpha: 0.92).cgColor
+        center.cornerRadius = 14
+        center.masksToBounds = true
+        center.font = NSFont.systemFont(ofSize: 16, weight: .medium)
+        center.fontSize = 16
+        center.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        center.string = ""
+        center.isHidden = true
+        inner.addSublayer(center)
+
         let label = CATextLayer()
         label.alignmentMode = .center
         label.truncationMode = .end
@@ -57,6 +72,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         self.layer = outer
         self.content = inner
         self.numberLabel = label
+        self.centerLabel = center
         self.idleDot = dot
         self.windowTitle = scWindow.title ?? ""
         super.init()
@@ -78,7 +94,33 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         case (let n?, true): numberLabel.string = "\(n)"
         case (let n?, false): numberLabel.string = "\(n) — \(trimmed)"
         }
+        centerLabel.string = trimmed.isEmpty ? "" : "•  \(trimmed)"
         layoutLabel()
+        layoutCenterLabel()
+    }
+
+    private func layoutCenterLabel() {
+        let rect = layer.bounds
+        guard rect.width > 0 else { return }
+        let text = (centerLabel.string as? String) ?? ""
+        if text.isEmpty {
+            centerLabel.frame = .zero
+            return
+        }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: centerLabel.font as? NSFont ?? NSFont.systemFont(ofSize: 16, weight: .medium)
+        ]
+        let textWidth = (text as NSString).size(withAttributes: attrs).width
+        let hPad: CGFloat = 20
+        let height: CGFloat = 38
+        let maxWidth = max(80, rect.size.width - 32)
+        let width = min(maxWidth, ceil(textWidth) + hPad * 2)
+        centerLabel.frame = CGRect(
+            x: (rect.size.width - width) / 2,
+            y: (rect.size.height - height) / 2,
+            width: width,
+            height: height
+        )
     }
 
     func setFrame(_ rect: CGRect) {
@@ -87,6 +129,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         content.frame = local
         layer.shadowPath = CGPath(roundedRect: local, cornerWidth: 10, cornerHeight: 10, transform: nil)
         layoutLabel()
+        layoutCenterLabel()
         let dotSize: CGFloat = 10
         let inset: CGFloat = 8
         idleDot.frame = CGRect(
@@ -133,14 +176,15 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func applyHighlight() {
+        centerLabel.isHidden = true
         switch highlight {
         case .none:
             layer.shadowOpacity = 0
             content.borderWidth = 0
         case .subtle:
             layer.shadowOpacity = 0
-            content.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.55).cgColor
-            content.borderWidth = 1.5
+            content.borderColor = NSColor.controlAccentColor.cgColor
+            content.borderWidth = 2
         case .glow:
             content.borderWidth = 0
             layer.shadowColor = NSColor.controlAccentColor.cgColor
