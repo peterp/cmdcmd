@@ -1,15 +1,14 @@
 import AppKit
 import ScreenCaptureKit
-import CoreImage
 import CoreMedia
+import CoreVideo
 
 final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     let scWindow: SCWindow
     let ownerPID: pid_t
     let layer: CALayer
     private var stream: SCStream?
-    private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInitiated)
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInteractive)
 
     init(scWindow: SCWindow, ownerPID: pid_t) {
         self.scWindow = scWindow
@@ -20,6 +19,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         l.borderColor = NSColor.controlAccentColor.cgColor
         l.borderWidth = 0
         l.contentsGravity = .resizeAspect
+        l.minificationFilter = .trilinear
+        l.magnificationFilter = .linear
         l.masksToBounds = true
         self.layer = l
         super.init()
@@ -33,13 +34,13 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
         let config = SCStreamConfiguration()
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        config.width = max(64, Int(scWindow.frame.width * scale / 2))
-        config.height = max(64, Int(scWindow.frame.height * scale / 2))
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 2)
+        config.width = max(64, Int(scWindow.frame.width * scale))
+        config.height = max(64, Int(scWindow.frame.height * scale))
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = false
         config.scalesToFit = true
-        config.queueDepth = 3
+        config.queueDepth = 5
         config.ignoreShadowsSingleWindow = true
 
         do {
@@ -60,13 +61,12 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid,
-              let pixelBuffer = sampleBuffer.imageBuffer else { return }
-        let ci = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let cg = ciContext.createCGImage(ci, from: ci.extent) else { return }
+              let pixelBuffer = sampleBuffer.imageBuffer,
+              let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else { return }
         DispatchQueue.main.async { [layer] in
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer.contents = cg
+            layer.contents = surface
             CATransaction.commit()
         }
     }
