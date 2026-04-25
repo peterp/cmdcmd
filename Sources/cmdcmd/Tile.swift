@@ -3,31 +3,97 @@ import ScreenCaptureKit
 import CoreMedia
 import CoreVideo
 
+
 final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     let scWindow: SCWindow
     let ownerPID: pid_t
+    let ignoreKey: String
     let layer: CALayer
+    private let content: CALayer
+    private let numberLabel: CATextLayer
     private var stream: SCStream?
     private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInteractive)
 
     init(scWindow: SCWindow, ownerPID: pid_t) {
         self.scWindow = scWindow
         self.ownerPID = ownerPID
-        let l = CALayer()
-        l.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
-        l.cornerRadius = 10
-        l.borderColor = NSColor.controlAccentColor.cgColor
-        l.borderWidth = 0
-        l.contentsGravity = .resizeAspect
-        l.minificationFilter = .trilinear
-        l.magnificationFilter = .linear
-        l.masksToBounds = true
-        self.layer = l
+        let bid = scWindow.owningApplication?.bundleIdentifier ?? ""
+        let title = scWindow.title ?? ""
+        self.ignoreKey = "\(bid)|||\(title)"
+
+        let outer = CALayer()
+        outer.masksToBounds = false
+        outer.shadowOpacity = 0
+        let inner = CALayer()
+        inner.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
+        inner.cornerRadius = 10
+        inner.contentsGravity = .resizeAspect
+        inner.minificationFilter = .trilinear
+        inner.magnificationFilter = .linear
+        inner.masksToBounds = true
+        outer.addSublayer(inner)
+
+        let label = CATextLayer()
+        label.alignmentMode = .center
+        label.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        label.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        label.cornerRadius = 6
+        label.masksToBounds = true
+        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        label.fontSize = 12
+        label.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        label.string = ""
+        inner.addSublayer(label)
+
+        self.layer = outer
+        self.content = inner
+        self.numberLabel = label
         super.init()
     }
 
-    var isSelected: Bool = false {
-        didSet { layer.borderWidth = isSelected ? 4 : 0 }
+    func setNumber(_ n: Int?) {
+        numberLabel.string = n.map { "\($0)" } ?? ""
+    }
+
+    func setFrame(_ rect: CGRect) {
+        layer.frame = rect
+        let local = CGRect(origin: .zero, size: rect.size)
+        content.frame = local
+        layer.shadowPath = CGPath(roundedRect: local, cornerWidth: 10, cornerHeight: 10, transform: nil)
+        let badge = CGSize(width: 22, height: 18)
+        let inset: CGFloat = 8
+        numberLabel.frame = CGRect(
+            x: inset,
+            y: rect.size.height - badge.height - inset,
+            width: badge.width,
+            height: badge.height
+        )
+    }
+
+    enum Highlight {
+        case none, subtle, glow
+    }
+
+    var highlight: Highlight = .none {
+        didSet { applyHighlight() }
+    }
+
+    private func applyHighlight() {
+        switch highlight {
+        case .none:
+            layer.shadowOpacity = 0
+            content.borderWidth = 0
+        case .subtle:
+            layer.shadowOpacity = 0
+            content.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.55).cgColor
+            content.borderWidth = 1.5
+        case .glow:
+            content.borderWidth = 0
+            layer.shadowColor = NSColor.controlAccentColor.cgColor
+            layer.shadowOpacity = 0.8
+            layer.shadowRadius = 22
+            layer.shadowOffset = .zero
+        }
     }
 
     func start() async {
@@ -63,10 +129,10 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         guard type == .screen, sampleBuffer.isValid,
               let pixelBuffer = sampleBuffer.imageBuffer,
               let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else { return }
-        DispatchQueue.main.async { [layer] in
+        DispatchQueue.main.async { [content] in
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer.contents = surface
+            content.contents = surface
             CATransaction.commit()
         }
     }

@@ -5,6 +5,7 @@ final class Overlay {
     private var window: NSWindow?
     private var view: OverlayView?
     private var visible = false
+    private var allTiles: [Tile] = []
     private var tiles: [Tile] = []
     private var gridCols: Int = 1
     private var selectedIndex: Int = 0
@@ -12,8 +13,17 @@ final class Overlay {
     private var savedFrames: [CGRect] = []
     private var activeSpaceAtShow: CGSSpaceID = 0
     private var prevFrontPID: pid_t = 0
+    private var prevFrontTitle: String = ""
+    private var showIgnored: Bool = false
+    private var focusMode: Bool = false
+    private var focusMonitor: Any?
     private var dragState: DragState?
     private let tracker: SpaceTracker
+
+    private var ignoredKeys: Set<String> {
+        get { Set((UserDefaults.standard.array(forKey: "ignoredWindows") as? [String]) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "ignoredWindows") }
+    }
 
     private struct DragState {
         var index: Int
@@ -32,19 +42,69 @@ final class Overlay {
         }
     }
 
+    private var workspaceObserver: NSObjectProtocol?
+
     init(tracker: SpaceTracker) {
         self.tracker = tracker
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didDeactivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reclaimFocusIfNeeded()
+        }
+    }
+
+    deinit {
+        if let o = workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(o)
+        }
+    }
+
+    private func reclaimFocusIfNeeded() {
+        guard visible, !focusMode else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, self.visible, !self.focusMode, !NSApp.isActive else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            self.window?.makeKeyAndOrderFront(nil)
+            if let v = self.view { self.window?.makeFirstResponder(v) }
+        }
     }
 
     func toggle() {
-        visible ? hide() : show()
+        if visible {
+            if NSApp.isActive {
+                hide()
+            } else if focusMode {
+                exitFocusMode()
+            } else {
+                NSApp.activate(ignoringOtherApps: true)
+                window?.makeKeyAndOrderFront(nil)
+                if let v = view { window?.makeFirstResponder(v) }
+            }
+        } else {
+            show()
+        }
     }
 
     private func show() {
         activeSpaceAtShow = tracker.activeSpace()
         prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        prevFrontTitle = focusedWindowTitle(pid: prevFrontPID) ?? ""
         visible = true
         Task { await prepareAndShow() }
+    }
+
+    private func focusedWindowTitle(pid: pid_t) -> String? {
+        guard pid > 0 else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        var win: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &win) == .success,
+              CFGetTypeID(win) == AXUIElementGetTypeID() else { return nil }
+        let axWin = win as! AXUIElement
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &title) == .success else { return nil }
+        return title as? String
     }
 
     private func prepareAndShow() async {
@@ -59,7 +119,7 @@ final class Overlay {
 
         await MainActor.run {
             guard visible else { return }
-            let screenFrame = NSScreen.main?.frame ?? .zero
+            let screenFrame = NSScreen.main?.visibleFrame ?? .zero
             let w = window ?? makeWindow(frame: screenFrame)
             window = w
             w.setFrame(screenFrame, display: false)
@@ -77,36 +137,135 @@ final class Overlay {
         }
 
         let saved = savedOrder
-        let new: [Tile]
+        let ordered: [Tile]
         if saved.isEmpty {
-            new = mcTiles
+            ordered = mcTiles
         } else {
             let presentIDs = Set(mcTiles.map { CGWindowID($0.scWindow.windowID) })
             let knownInOrder = saved.filter { presentIDs.contains($0) }
             let knownIDs = Set(knownInOrder)
             let known = knownInOrder.compactMap { wid in mcTiles.first(where: { CGWindowID($0.scWindow.windowID) == wid }) }
             let unknown = mcTiles.filter { !knownIDs.contains(CGWindowID($0.scWindow.windowID)) }
-            new = known + unknown
+            ordered = known + unknown
         }
-        savedOrder = new.map { CGWindowID($0.scWindow.windowID) }
+        savedOrder = ordered.map { CGWindowID($0.scWindow.windowID) }
 
-        tiles = new
-        let bounds = window?.contentView?.bounds ?? .zero
-        layoutTiles(in: bounds)
-        for t in new {
+        allTiles = ordered
+        for t in ordered {
             window?.contentView?.layer?.addSublayer(t.layer)
         }
-        selectedIndex = 0
-        updateSelection()
+        rebuildDisplayed()
+        if let i = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.scWindow.title ?? "") == prevFrontTitle })
+            ?? tiles.firstIndex(where: { $0.ownerPID == prevFrontPID }) {
+            selectedIndex = i
+            updateSelection()
+        }
         Task {
             await withTaskGroup(of: Void.self) { group in
-                for t in new { group.addTask { await t.start() } }
+                for t in ordered { group.addTask { await t.start() } }
             }
         }
     }
 
+    private func rebuildDisplayed() {
+        let ignored = ignoredKeys
+        let displayed = allTiles.filter { !ignored.contains($0.ignoreKey) || showIgnored }
+        for t in allTiles {
+            let isIgnored = ignored.contains(t.ignoreKey)
+            t.layer.isHidden = isIgnored && !showIgnored
+            t.layer.opacity = (isIgnored && showIgnored) ? 0.35 : 1.0
+            t.setNumber(nil)
+        }
+        tiles = displayed
+        for (i, t) in tiles.enumerated() {
+            t.setNumber(i < 9 ? i + 1 : nil)
+        }
+        let bounds = window?.contentView?.bounds ?? .zero
+        layoutTiles(in: bounds)
+        if !tiles.indices.contains(selectedIndex) {
+            selectedIndex = tiles.isEmpty ? 0 : 0
+        }
+        updateSelection()
+    }
+
+    private func toggleIgnoreSelected() {
+        guard tiles.indices.contains(selectedIndex) else { return }
+        let key = tiles[selectedIndex].ignoreKey
+        var set = ignoredKeys
+        if set.contains(key) { set.remove(key) } else { set.insert(key) }
+        ignoredKeys = set
+        let prev = selectedIndex
+        rebuildDisplayed()
+        selectedIndex = min(prev, max(0, tiles.count - 1))
+        updateSelection()
+        layoutTilesAnimated()
+    }
+
+    private func forwardKey(_ event: NSEvent) {
+        guard tiles.indices.contains(selectedIndex) else { return }
+        let pid = tiles[selectedIndex].ownerPID
+        event.cgEvent?.postToPid(pid)
+    }
+
+    private func enterFocusMode() {
+        guard tiles.indices.contains(selectedIndex) else { return }
+        let tile = tiles[selectedIndex]
+        focusMode = true
+        view?.inFocusMode = true
+        updateSelection()
+
+        if let app = NSRunningApplication(processIdentifier: tile.ownerPID) {
+            app.activate()
+        }
+        if let title = tile.scWindow.title, !title.isEmpty {
+            raiseAXWindow(pid: tile.ownerPID, title: title)
+        }
+
+        if focusMonitor == nil {
+            focusMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard event.keyCode == 53, event.modifierFlags.contains(.command) else { return }
+                DispatchQueue.main.async { self?.exitFocusMode() }
+            }
+        }
+    }
+
+    private func exitFocusMode() {
+        guard focusMode else { return }
+        focusMode = false
+        view?.inFocusMode = false
+        updateSelection()
+        if let m = focusMonitor {
+            NSEvent.removeMonitor(m)
+            focusMonitor = nil
+        }
+        guard visible, let w = window else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        if let v = view { w.makeFirstResponder(v) }
+    }
+
+
+    private func unignoreSelected() {
+        guard tiles.indices.contains(selectedIndex) else { return }
+        let key = tiles[selectedIndex].ignoreKey
+        var set = ignoredKeys
+        guard set.remove(key) != nil else { return }
+        ignoredKeys = set
+        let prev = selectedIndex
+        rebuildDisplayed()
+        selectedIndex = min(prev, max(0, tiles.count - 1))
+        updateSelection()
+        layoutTilesAnimated()
+    }
+
+    private func toggleShowIgnored() {
+        showIgnored.toggle()
+        rebuildDisplayed()
+        layoutTilesAnimated()
+    }
+
     private func hide() {
-        let toStop = tiles
+        let toStop = allTiles
         window?.orderOut(nil)
         visible = false
         if prevFrontPID != 0,
@@ -115,7 +274,15 @@ final class Overlay {
         }
         prevFrontPID = 0
         tiles = []
+        allTiles = []
         selectedIndex = 0
+        showIgnored = false
+        focusMode = false
+        view?.inFocusMode = false
+        if let m = focusMonitor {
+            NSEvent.removeMonitor(m)
+            focusMonitor = nil
+        }
         Task {
             for t in toStop { await t.stop() }
         }
@@ -167,13 +334,14 @@ final class Overlay {
             let row = i / cols
             let x = originX + CGFloat(col) * (tileW + pad)
             let y = bounds.height - originY - CGFloat(row + 1) * tileH - CGFloat(row) * pad
-            tile.layer.frame = CGRect(x: x, y: y, width: tileW, height: tileH)
+            tile.setFrame(CGRect(x: x, y: y, width: tileW, height: tileH))
         }
     }
 
     private func updateSelection() {
         for (i, t) in tiles.enumerated() {
-            t.isSelected = (i == selectedIndex)
+            let selected = (i == selectedIndex)
+            t.highlight = selected ? (focusMode ? .glow : .subtle) : .none
         }
     }
 
@@ -253,12 +421,12 @@ final class Overlay {
             let f = tile.layer.frame
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            tile.layer.frame = CGRect(
+            tile.setFrame(CGRect(
                 x: point.x + state.offset.x,
                 y: point.y + state.offset.y,
                 width: f.width,
                 height: f.height
-            )
+            ))
             CATransaction.commit()
         }
         dragState = state
@@ -276,6 +444,7 @@ final class Overlay {
                 tiles.swapAt(state.index, target)
                 savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
                 selectedIndex = target
+                renumberTiles()
             }
             layoutTilesAnimated()
             updateSelection()
@@ -297,8 +466,15 @@ final class Overlay {
         tiles.swapAt(selectedIndex, target)
         savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
         selectedIndex = target
+        renumberTiles()
         layoutTilesAnimated()
         updateSelection()
+    }
+
+    private func renumberTiles() {
+        for (i, t) in tiles.enumerated() {
+            t.setNumber(i < 9 ? i + 1 : nil)
+        }
     }
 
     private func layoutTilesAnimated() {
@@ -317,11 +493,12 @@ final class Overlay {
         savedFrames = tiles.map { $0.layer.frame }
         isZoomed = true
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.18)
+        CATransaction.setAnimationDuration(0.12)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
         for (i, t) in tiles.enumerated() {
             if i == selectedIndex {
                 t.layer.zPosition = 1
-                t.layer.frame = target
+                t.setFrame(target)
             } else {
                 t.layer.opacity = 0
             }
@@ -333,9 +510,10 @@ final class Overlay {
         guard isZoomed else { return }
         isZoomed = false
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.18)
+        CATransaction.setAnimationDuration(0.12)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
         for (i, t) in tiles.enumerated() {
-            if i < savedFrames.count { t.layer.frame = savedFrames[i] }
+            if i < savedFrames.count { t.setFrame(savedFrames[i]) }
             t.layer.zPosition = 0
             t.layer.opacity = 1
         }
@@ -383,6 +561,12 @@ final class Overlay {
         v.onMouseUp = { [weak self] p in self?.mouseUpAt(p) }
         v.onDigit = { [weak self] n in self?.pickIndex(n - 1) }
         v.onSwap = { [weak self] dx, dy in self?.swapSelected(dx: dx, dy: dy) }
+        v.onIgnore = { [weak self] in self?.toggleIgnoreSelected() }
+        v.onUnignore = { [weak self] in self?.unignoreSelected() }
+        v.onToggleIgnoredView = { [weak self] in self?.toggleShowIgnored() }
+        v.onForwardKey = { [weak self] e in self?.forwardKey(e) }
+        v.onEnterFocus = { [weak self] in self?.enterFocusMode() }
+        v.onExitFocus = { [weak self] in self?.exitFocusMode() }
         w.contentView = v
         view = v
         return w
@@ -405,34 +589,55 @@ private final class OverlayView: NSView {
     var onMouseUp: ((NSPoint) -> Void)?
     var onDigit: ((Int) -> Void)?
     var onSwap: ((Int, Int) -> Void)?
+    var onIgnore: (() -> Void)?
+    var onUnignore: (() -> Void)?
+    var onToggleIgnoredView: (() -> Void)?
+    var onForwardKey: ((NSEvent) -> Void)?
+    var onEnterFocus: (() -> Void)?
+    var onExitFocus: (() -> Void)?
+    var inFocusMode: Bool = false
 
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        if inFocusMode {
+            if event.keyCode == 53 && event.modifierFlags.contains(.command) {
+                onExitFocus?(); return
+            }
+            onForwardKey?(event)
+            return
+        }
         let cmd = event.modifierFlags.contains(.command)
         switch event.keyCode {
-        case 53: onEscape?()
-        case 36, 76: onEnter?()
+        case 53: onEscape?(); return
         case 49:
             if !event.isARepeat { onSpaceDown?() }
-        case 123: cmd ? onSwap?(-1, 0) : onArrow?(-1, 0)
-        case 124: cmd ? onSwap?(1, 0) : onArrow?(1, 0)
-        case 125: cmd ? onSwap?(0, 1) : onArrow?(0, 1)
-        case 126: cmd ? onSwap?(0, -1) : onArrow?(0, -1)
-        default:
-            if let ch = event.charactersIgnoringModifiers,
-               ch.count == 1,
-               let n = Int(ch),
-               (1...9).contains(n) {
-                onDigit?(n)
-            } else {
-                super.keyDown(with: event)
-            }
+            return
+        case 36, 76: onEnter?(); return
+        case 3 where cmd: onEnterFocus?(); return
+        case 123 where cmd: onSwap?(-1, 0); return
+        case 124 where cmd: onSwap?(1, 0); return
+        case 125 where cmd: onSwap?(0, 1); return
+        case 126 where cmd: onSwap?(0, -1); return
+        case 123: onArrow?(-1, 0); return
+        case 124: onArrow?(1, 0); return
+        case 125: onArrow?(0, 1); return
+        case 126: onArrow?(0, -1); return
+        case 27 where cmd: onIgnore?(); return
+        case 24 where cmd: onUnignore?(); return
+        case 34 where cmd: onToggleIgnoredView?(); return
+        default: break
+        }
+        if !cmd, let ch = event.charactersIgnoringModifiers, ch.count == 1,
+           let n = Int(ch), (1...9).contains(n) {
+            onDigit?(n)
+            return
         }
     }
 
     override func keyUp(with event: NSEvent) {
-        if event.keyCode == 49 { onSpaceUp?() } else { super.keyUp(with: event) }
+        if event.keyCode == 49 { onSpaceUp?(); return }
+        if inFocusMode { onForwardKey?(event) }
     }
 
     override func mouseDown(with event: NSEvent) {
