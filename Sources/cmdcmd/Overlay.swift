@@ -100,10 +100,10 @@ final class Overlay {
 
     private func startActivityTimer() {
         activityTimer?.invalidate()
-        activityTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        activityTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             guard let self else { return }
             let now = CFAbsoluteTimeGetCurrent()
-            for t in self.allTiles { t.updateActivity(now: now, threshold: 1.5) }
+            for t in self.allTiles { t.updateActivity(now: now, threshold: 0.5) }
         }
     }
 
@@ -186,11 +186,11 @@ final class Overlay {
 
     private func rebuildDisplayed() {
         let ignored = ignoredKeys
-        let displayed = allTiles.filter { !ignored.contains($0.ignoreKey) || showIgnored }
+        let displayed = allTiles.filter { showIgnored ? ignored.contains($0.ignoreKey) : !ignored.contains($0.ignoreKey) }
         for t in allTiles {
             let isIgnored = ignored.contains(t.ignoreKey)
-            t.layer.isHidden = isIgnored && !showIgnored
-            t.layer.opacity = (isIgnored && showIgnored) ? 0.35 : 1.0
+            t.layer.isHidden = showIgnored ? !isIgnored : isIgnored
+            t.layer.opacity = 1.0
             t.setNumber(nil)
         }
         tiles = displayed
@@ -200,7 +200,7 @@ final class Overlay {
         let bounds = window?.contentView?.bounds ?? .zero
         layoutTiles(in: bounds)
         if !tiles.indices.contains(selectedIndex) {
-            selectedIndex = tiles.isEmpty ? 0 : 0
+            selectedIndex = max(0, tiles.count - 1)
         }
         updateSelection()
     }
@@ -367,39 +367,12 @@ final class Overlay {
     }
 
     private func layoutTiles(in bounds: NSRect) {
-        let count = tiles.count
-        guard count > 0 else { return }
-        let cols = Int(ceil(sqrt(Double(count))))
-        let rows = Int(ceil(Double(count) / Double(cols)))
-        gridCols = cols
-        let pad: CGFloat = 24
-
         let screenSize = NSScreen.main?.frame.size ?? bounds.size
         let ar = screenSize.width / max(1, screenSize.height)
-
-        let availW = (bounds.width - pad * CGFloat(cols + 1)) / CGFloat(cols)
-        let availH = (bounds.height - pad * CGFloat(rows + 1)) / CGFloat(rows)
-        let tileW: CGFloat
-        let tileH: CGFloat
-        if availW / availH > ar {
-            tileH = availH
-            tileW = tileH * ar
-        } else {
-            tileW = availW
-            tileH = tileW / ar
-        }
-
-        let totalW = tileW * CGFloat(cols) + pad * CGFloat(cols - 1)
-        let totalH = tileH * CGFloat(rows) + pad * CGFloat(rows - 1)
-        let originX = (bounds.width - totalW) / 2
-        let originY = (bounds.height - totalH) / 2
-
-        for (i, tile) in tiles.enumerated() {
-            let col = i % cols
-            let row = i / cols
-            let x = originX + CGFloat(col) * (tileW + pad)
-            let y = bounds.height - originY - CGFloat(row + 1) * tileH - CGFloat(row) * pad
-            tile.setFrame(CGRect(x: x, y: y, width: tileW, height: tileH))
+        let (rects, cols) = GridLayout.frames(count: tiles.count, bounds: bounds, aspectRatio: ar)
+        gridCols = cols
+        for (tile, rect) in zip(tiles, rects) {
+            tile.setFrame(rect)
         }
     }
 
