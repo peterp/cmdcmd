@@ -15,10 +15,10 @@ Requires macOS 14+.
 | arrow keys | Move selection |
 | `1`–`9` | Pick that tile |
 | `return` | Pick selected tile |
-| `space` (hold) | Zoom selected tile |
+| `space` (hold) | Peek (zoom selected tile while held) |
+| ⌘`space` (hold) | Peek; on release, enter focus mode on the selected window |
 | click / drag | Pick or drag-to-reorder |
-| ⌘ + arrow | Swap selected tile with neighbour |
-| ⌘F | Enter focus mode (raise window, forward keys, overlay stays) |
+| ⌘ + arrow | Swap selected tile with neighbour in that direction |
 | ⌘`esc` | Exit focus mode |
 | ⌘`delete` | Ignore / un-ignore selected window |
 | ⌘Y | Toggle "show hidden" view |

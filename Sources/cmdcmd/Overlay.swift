@@ -454,7 +454,13 @@ final class Overlay {
 
     private func swapSelected(dx: Int, dy: Int) {
         guard !tiles.isEmpty, !isZoomed else { return }
-        let target = selectedIndex + (dx + dy)
+        let cols = max(1, gridCols)
+        let row = selectedIndex / cols
+        let col = selectedIndex % cols
+        let newCol = col + dx
+        let newRow = row + dy
+        guard newCol >= 0, newCol < cols, newRow >= 0 else { return }
+        let target = newRow * cols + newCol
         guard target >= 0, target < tiles.count, target != selectedIndex else { return }
         tiles.swapAt(selectedIndex, target)
         savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
@@ -536,7 +542,7 @@ final class Overlay {
             backing: .buffered,
             defer: false
         )
-        w.level = .popUpMenu
+        w.level = .floating
         w.isOpaque = false
         w.backgroundColor = NSColor.black.withAlphaComponent(0.85)
         w.isOpaque = false

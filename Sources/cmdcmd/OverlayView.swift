@@ -22,6 +22,7 @@ final class OverlayView: NSView {
     var onEnterFocus: (() -> Void)?
     var onExitFocus: (() -> Void)?
     var inFocusMode: Bool = false
+    private var cmdSpacePeeking = false
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -37,10 +38,12 @@ final class OverlayView: NSView {
         switch event.keyCode {
         case 53: onEscape?(); return
         case 49:
-            if !event.isARepeat { onSpaceDown?() }
+            if !event.isARepeat {
+                cmdSpacePeeking = cmd
+                onSpaceDown?()
+            }
             return
         case 36, 76: onEnter?(); return
-        case 3 where cmd: onEnterFocus?(); return
         case 123 where cmd: onSwap?(-1, 0); return
         case 124 where cmd: onSwap?(1, 0); return
         case 125 where cmd: onSwap?(0, 1); return
@@ -61,7 +64,14 @@ final class OverlayView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
-        if event.keyCode == 49 { onSpaceUp?(); return }
+        if event.keyCode == 49 {
+            onSpaceUp?()
+            if cmdSpacePeeking {
+                cmdSpacePeeking = false
+                onEnterFocus?()
+            }
+            return
+        }
         if inFocusMode { onForwardKey?(event) }
     }
 
