@@ -4,22 +4,28 @@ import ScreenCaptureKit
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+app.applicationIconImage = AppIcon.makePlaceholder()
 app.finishLaunching()
-
-_ = CGRequestScreenCaptureAccess()
-Task {
-    _ = try? await SCShareableContent.current
-}
 
 let tracker = SpaceTracker()
 let overlay = Overlay(tracker: tracker)
+var chord: CmdChord?
 
-let chord = CmdChord {
-    overlay.toggle()
+func startApp() {
+    Task {
+        _ = try? await SCShareableContent.current
+    }
+    chord = CmdChord {
+        overlay.toggle()
+        dumpState(tracker: tracker)
+    }
     dumpState(tracker: tracker)
 }
 
-dumpState(tracker: tracker)
+let onboarding = Onboarding(onComplete: startApp)
+if !onboarding.showIfNeeded() {
+    startApp()
+}
 
 func dumpState(tracker: SpaceTracker) {
     let spaces = tracker.spaces()

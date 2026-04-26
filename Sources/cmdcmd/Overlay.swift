@@ -11,7 +11,6 @@ final class Overlay {
     private var selectedIndex: Int = 0
     private var isZoomed = false
     private var savedFrames: [CGRect] = []
-    private var activeSpaceAtShow: CGSSpaceID = 0
     private var prevFrontPID: pid_t = 0
     private var prevFrontTitle: String = ""
     private var showIgnored: Bool = false
@@ -44,7 +43,7 @@ final class Overlay {
 
     private var workspaceObserver: NSObjectProtocol?
     private var activityTimer: Timer?
-    private var hintLayer: CATextLayer?
+    private let hint = HintPill()
 
     init(tracker: SpaceTracker) {
         self.tracker = tracker
@@ -90,7 +89,6 @@ final class Overlay {
     }
 
     private func show() {
-        activeSpaceAtShow = tracker.activeSpace()
         prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         prevFrontTitle = focusedWindowTitle(pid: prevFrontPID) ?? ""
         visible = true
@@ -186,11 +184,11 @@ final class Overlay {
 
     private func rebuildDisplayed() {
         let ignored = ignoredKeys
-        let displayed = allTiles.filter { showIgnored ? ignored.contains($0.ignoreKey) : !ignored.contains($0.ignoreKey) }
+        let displayed = allTiles.filter { showIgnored ? true : !ignored.contains($0.ignoreKey) }
         for t in allTiles {
             let isIgnored = ignored.contains(t.ignoreKey)
-            t.layer.isHidden = showIgnored ? !isIgnored : isIgnored
-            t.layer.opacity = 1.0
+            t.layer.isHidden = showIgnored ? false : isIgnored
+            t.layer.opacity = (showIgnored && isIgnored) ? 0.3 : 1.0
             t.setNumber(nil)
         }
         tiles = displayed
@@ -282,48 +280,10 @@ final class Overlay {
             text = nil
         }
         if let text {
-            let hint = hintLayer ?? makeHintLayer()
-            if hintLayer == nil {
-                root.addSublayer(hint)
-                hintLayer = hint
-            }
-            hint.string = text
-            hint.isHidden = false
-            layoutHint()
+            hint.show(text: text, in: root, bounds: win.contentView?.bounds ?? .zero)
         } else {
-            hintLayer?.isHidden = true
+            hint.hide()
         }
-    }
-
-    private func makeHintLayer() -> CATextLayer {
-        let h = CATextLayer()
-        h.alignmentMode = .center
-        h.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
-        h.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
-        h.cornerRadius = 10
-        h.masksToBounds = true
-        h.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        h.fontSize = 12
-        h.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
-        return h
-    }
-
-    private func layoutHint() {
-        guard let hint = hintLayer, let bounds = window?.contentView?.bounds else { return }
-        let text = (hint.string as? String) ?? ""
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: hint.font as? NSFont ?? NSFont.systemFont(ofSize: 12, weight: .medium)
-        ]
-        let textWidth = (text as NSString).size(withAttributes: attrs).width
-        let pad: CGFloat = 18
-        let height: CGFloat = 26
-        let width = ceil(textWidth) + pad * 2
-        hint.frame = CGRect(
-            x: (bounds.width - width) / 2,
-            y: 24,
-            width: width,
-            height: height
-        )
     }
 
     private func hide() {
@@ -342,7 +302,7 @@ final class Overlay {
         showIgnored = false
         focusMode = false
         view?.inFocusMode = false
-        hintLayer?.isHidden = true
+        hint.hide()
         if let m = focusMonitor {
             NSEvent.removeMonitor(m)
             focusMonitor = nil
@@ -355,7 +315,7 @@ final class Overlay {
         if let root = window?.contentView?.layer {
             root.sublayers?.forEach { $0.removeFromSuperlayer() }
         }
-        hintLayer = nil
+        hint.reset()
     }
 
 
@@ -605,83 +565,5 @@ final class Overlay {
         w.contentView = v
         view = v
         return w
-    }
-}
-
-private final class OverlayWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-}
-
-private final class OverlayView: NSView {
-    var onEscape: (() -> Void)?
-    var onArrow: ((Int, Int) -> Void)?
-    var onEnter: (() -> Void)?
-    var onSpaceDown: (() -> Void)?
-    var onSpaceUp: (() -> Void)?
-    var onMouseDown: ((NSPoint) -> Void)?
-    var onMouseDragged: ((NSPoint) -> Void)?
-    var onMouseUp: ((NSPoint) -> Void)?
-    var onDigit: ((Int) -> Void)?
-    var onSwap: ((Int, Int) -> Void)?
-    var onIgnore: (() -> Void)?
-    var onToggleIgnoredView: (() -> Void)?
-    var onForwardKey: ((NSEvent) -> Void)?
-    var onEnterFocus: (() -> Void)?
-    var onExitFocus: (() -> Void)?
-    var inFocusMode: Bool = false
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func keyDown(with event: NSEvent) {
-        if inFocusMode {
-            if event.keyCode == 53 && event.modifierFlags.contains(.command) {
-                onExitFocus?(); return
-            }
-            onForwardKey?(event)
-            return
-        }
-        let cmd = event.modifierFlags.contains(.command)
-        switch event.keyCode {
-        case 53: onEscape?(); return
-        case 49:
-            if !event.isARepeat { onSpaceDown?() }
-            return
-        case 36, 76: onEnter?(); return
-        case 3 where cmd: onEnterFocus?(); return
-        case 123 where cmd: onSwap?(-1, 0); return
-        case 124 where cmd: onSwap?(1, 0); return
-        case 125 where cmd: onSwap?(0, 1); return
-        case 126 where cmd: onSwap?(0, -1); return
-        case 123: onArrow?(-1, 0); return
-        case 124: onArrow?(1, 0); return
-        case 125: onArrow?(0, 1); return
-        case 126: onArrow?(0, -1); return
-        case 51 where cmd: onIgnore?(); return
-        case 34 where cmd: onToggleIgnoredView?(); return
-        default: break
-        }
-        if !cmd, let ch = event.charactersIgnoringModifiers, ch.count == 1,
-           let n = Int(ch), (1...9).contains(n) {
-            onDigit?(n)
-            return
-        }
-    }
-
-    override func keyUp(with event: NSEvent) {
-        if event.keyCode == 49 { onSpaceUp?(); return }
-        if inFocusMode { onForwardKey?(event) }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onMouseDown?(convert(event.locationInWindow, from: nil))
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        onMouseDragged?(convert(event.locationInWindow, from: nil))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        onMouseUp?(convert(event.locationInWindow, from: nil))
     }
 }

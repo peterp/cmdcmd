@@ -21,10 +21,10 @@ Requires macOS 14+.
 | ⌘F | Enter focus mode (raise window, forward keys, overlay stays) |
 | ⌘`esc` | Exit focus mode |
 | ⌘`delete` | Ignore / un-ignore selected window |
-| ⌘Y | Toggle "show ignored" view |
+| ⌘Y | Toggle "show hidden" view |
 | `esc` | Dismiss overlay |
 
-Tile order, ignored windows, and ignore state persist across launches via `UserDefaults`. Idle windows (no draw activity for ~0.5s) get a subtle indicator.
+Tile order and ignored windows persist across launches via `UserDefaults`. Idle windows (no draw activity for ~0.5s) get a subtle indicator. The "show hidden" view displays every window — ignored ones at reduced opacity — so you can un-ignore them.
 
 ## Build
 
@@ -43,23 +43,28 @@ swift build
 
 ## Permissions
 
-On first run macOS will prompt for:
+On first launch you'll see an onboarding window explaining what the app needs and why:
 
 - **Screen Recording** — for live tile previews (ScreenCaptureKit).
 - **Accessibility** — for the ⌘⌘ chord listener and to raise / forward keys to the chosen window.
 
-Both are required; the app is useless without them.
+Each row has a Grant button that opens the matching pane in System Settings. Click Continue once both are toggled on. Both are required; the app does nothing without them.
+
+The app shows in the Dock as `⌘ ⌘` so you can quit it the normal way.
 
 ## Layout
 
 ```
 Sources/cmdcmd/
-  main.swift          # entry point, wires Hotkey + CmdChord into Overlay
+  main.swift          # entry point, wires onboarding + CmdChord into Overlay
+  AppIcon.swift       # runtime-drawn placeholder Dock icon
+  Onboarding.swift    # first-run permission window
   Overlay.swift       # overlay window, tile grid, selection, focus mode
+  OverlayView.swift   # NSWindow + NSView event router for the overlay
+  HintPill.swift      # bottom-center mode-hint label
   Tile.swift          # per-window SCStream preview layer
   GridLayout.swift    # grid sizing for N tiles at the screen aspect ratio
   CmdChord.swift      # left+right Command chord detector
-  Hotkey.swift        # Carbon RegisterEventHotKey wrapper
   SpaceTracker.swift  # private CGS/SkyLight space + window enumeration
   Log.swift           # stderr logger
 Resources/Info.plist  # bundle metadata
