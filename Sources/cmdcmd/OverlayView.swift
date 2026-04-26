@@ -18,30 +18,32 @@ final class OverlayView: NSView {
     var onSwap: ((Int, Int) -> Void)?
     var onIgnore: (() -> Void)?
     var onToggleIgnoredView: (() -> Void)?
-    var onForwardKey: ((NSEvent) -> Void)?
-    var onEnterFocus: (() -> Void)?
-    var onExitFocus: (() -> Void)?
-    var inFocusMode: Bool = false
-    private var cmdSpacePeeking = false
+    var onTagColor: ((String?) -> Void)?
+    private var momentaryPeek = false
 
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
-        if inFocusMode {
-            if event.keyCode == 53 && event.modifierFlags.contains(.command) {
-                onExitFocus?(); return
-            }
-            onForwardKey?(event)
-            return
-        }
         let cmd = event.modifierFlags.contains(.command)
+        let opt = event.modifierFlags.contains(.option)
+        if opt && !cmd {
+            switch event.keyCode {
+            case 5:  onTagColor?("green");  return
+            case 11: onTagColor?("blue");   return
+            case 15: onTagColor?("red");    return
+            case 16: onTagColor?("yellow"); return
+            case 31: onTagColor?("orange"); return
+            case 35: onTagColor?("purple"); return
+            case 29: onTagColor?(nil);      return
+            default: break
+            }
+        }
         switch event.keyCode {
         case 53: onEscape?(); return
         case 49:
-            if !event.isARepeat {
-                cmdSpacePeeking = cmd
-                onSpaceDown?()
-            }
+            if event.isARepeat { return }
+            momentaryPeek = true
+            onSpaceDown?()
             return
         case 36, 76: onEnter?(); return
         case 123 where cmd: onSwap?(-1, 0); return
@@ -65,14 +67,16 @@ final class OverlayView: NSView {
 
     override func keyUp(with event: NSEvent) {
         if event.keyCode == 49 {
-            onSpaceUp?()
-            if cmdSpacePeeking {
-                cmdSpacePeeking = false
-                onEnterFocus?()
+            if momentaryPeek {
+                momentaryPeek = false
+                onSpaceUp?()
             }
             return
         }
-        if inFocusMode { onForwardKey?(event) }
+    }
+
+    func resetMomentaryPeek() {
+        momentaryPeek = false
     }
 
     override func mouseDown(with event: NSEvent) {

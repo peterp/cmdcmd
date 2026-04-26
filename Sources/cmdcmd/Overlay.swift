@@ -14,8 +14,6 @@ final class Overlay {
     private var prevFrontPID: pid_t = 0
     private var prevFrontTitle: String = ""
     private var showIgnored: Bool = false
-    private var focusMode: Bool = false
-    private var focusMonitor: Any?
     private var dragState: DragState?
     private let tracker: SpaceTracker
 
@@ -23,6 +21,8 @@ final class Overlay {
         get { Set((UserDefaults.standard.array(forKey: "ignoredWindows") as? [String]) ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: "ignoredWindows") }
     }
+
+    private var paneColors: [CGWindowID: String] = [:]
 
     private struct DragState {
         var index: Int
@@ -63,9 +63,9 @@ final class Overlay {
     }
 
     private func reclaimFocusIfNeeded() {
-        guard visible, !focusMode else { return }
+        guard visible else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            guard let self, self.visible, !self.focusMode, !NSApp.isActive else { return }
+            guard let self, self.visible, !NSApp.isActive else { return }
             NSApp.activate(ignoringOtherApps: true)
             self.window?.makeKeyAndOrderFront(nil)
             if let v = self.view { self.window?.makeFirstResponder(v) }
@@ -76,8 +76,6 @@ final class Overlay {
         if visible {
             if NSApp.isActive {
                 hide()
-            } else if focusMode {
-                exitFocusMode()
             } else {
                 NSApp.activate(ignoringOtherApps: true)
                 window?.makeKeyAndOrderFront(nil)
@@ -190,6 +188,7 @@ final class Overlay {
             t.layer.isHidden = showIgnored ? false : isIgnored
             t.layer.opacity = (showIgnored && isIgnored) ? 0.3 : 1.0
             t.setNumber(nil)
+            t.tintColorName = paneColors[CGWindowID(t.scWindow.windowID)]
         }
         tiles = displayed
         for (i, t) in tiles.enumerated() {
@@ -201,6 +200,13 @@ final class Overlay {
             selectedIndex = max(0, tiles.count - 1)
         }
         updateSelection()
+    }
+
+    private func tagSelectedColor(_ name: String?) {
+        guard tiles.indices.contains(selectedIndex) else { return }
+        let id = CGWindowID(tiles[selectedIndex].scWindow.windowID)
+        if let name { paneColors[id] = name } else { paneColors.removeValue(forKey: id) }
+        tiles[selectedIndex].tintColorName = name
     }
 
     private func toggleIgnoreSelected() {
@@ -216,52 +222,6 @@ final class Overlay {
         layoutTilesAnimated()
     }
 
-    private func forwardKey(_ event: NSEvent) {
-        guard tiles.indices.contains(selectedIndex) else { return }
-        let pid = tiles[selectedIndex].ownerPID
-        event.cgEvent?.postToPid(pid)
-    }
-
-    private func enterFocusMode() {
-        guard tiles.indices.contains(selectedIndex) else { return }
-        let tile = tiles[selectedIndex]
-        focusMode = true
-        view?.inFocusMode = true
-        updateSelection()
-        updateHint()
-
-        if let app = NSRunningApplication(processIdentifier: tile.ownerPID) {
-            app.activate()
-        }
-        if let title = tile.scWindow.title, !title.isEmpty {
-            raiseAXWindow(pid: tile.ownerPID, title: title)
-        }
-
-        if focusMonitor == nil {
-            focusMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard event.keyCode == 53, event.modifierFlags.contains(.command) else { return }
-                DispatchQueue.main.async { self?.exitFocusMode() }
-            }
-        }
-    }
-
-    private func exitFocusMode() {
-        guard focusMode else { return }
-        focusMode = false
-        view?.inFocusMode = false
-        updateSelection()
-        updateHint()
-        if let m = focusMonitor {
-            NSEvent.removeMonitor(m)
-            focusMonitor = nil
-        }
-        guard visible, let w = window else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        w.makeKeyAndOrderFront(nil)
-        if let v = view { w.makeFirstResponder(v) }
-    }
-
-
     private func toggleShowIgnored() {
         showIgnored.toggle()
         rebuildDisplayed()
@@ -271,16 +231,8 @@ final class Overlay {
 
     private func updateHint() {
         guard let win = window, let root = win.contentView?.layer else { return }
-        let text: String?
         if showIgnored {
-            text = "Hidden      ⌘⌫  toggle      esc  exit"
-        } else if focusMode {
-            text = "Focus      ⌘esc  exit"
-        } else {
-            text = nil
-        }
-        if let text {
-            hint.show(text: text, in: root, bounds: win.contentView?.bounds ?? .zero)
+            hint.show(text: "Hidden      ⌘⌫  toggle      esc  exit", in: root, bounds: win.contentView?.bounds ?? .zero)
         } else {
             hint.hide()
         }
@@ -300,13 +252,8 @@ final class Overlay {
         allTiles = []
         selectedIndex = 0
         showIgnored = false
-        focusMode = false
-        view?.inFocusMode = false
+        view?.resetMomentaryPeek()
         hint.hide()
-        if let m = focusMonitor {
-            NSEvent.removeMonitor(m)
-            focusMonitor = nil
-        }
         Task {
             for t in toStop { await t.stop() }
         }
@@ -338,8 +285,7 @@ final class Overlay {
 
     private func updateSelection() {
         for (i, t) in tiles.enumerated() {
-            let selected = (i == selectedIndex)
-            t.highlight = selected ? (focusMode ? .glow : .subtle) : .none
+            t.highlight = (i == selectedIndex) ? .subtle : .none
         }
     }
 
@@ -391,6 +337,11 @@ final class Overlay {
     }
 
     private func mouseDownAt(_ point: NSPoint) {
+        if isZoomed {
+            dragState = nil
+            pick()
+            return
+        }
         guard let i = tiles.firstIndex(where: { $0.layer.frame.contains(point) }) else {
             dragState = nil
             return
@@ -487,8 +438,19 @@ final class Overlay {
     private func beginZoom() {
         guard !isZoomed, tiles.indices.contains(selectedIndex) else { return }
         let bounds = window?.contentView?.bounds ?? .zero
-        let pad: CGFloat = 16
-        let target = bounds.insetBy(dx: pad, dy: pad)
+        let pad: CGFloat = 4
+        let avail = bounds.insetBy(dx: pad, dy: pad)
+        let src = tiles[selectedIndex].scWindow.frame
+        let srcAR = src.width / max(1, src.height)
+        let availAR = avail.width / max(1, avail.height)
+        let target: CGRect
+        if srcAR > availAR {
+            let h = avail.width / srcAR
+            target = CGRect(x: avail.minX, y: avail.midY - h / 2, width: avail.width, height: h)
+        } else {
+            let w = avail.height * srcAR
+            target = CGRect(x: avail.midX - w / 2, y: avail.minY, width: w, height: avail.height)
+        }
         savedFrames = tiles.map { $0.layer.frame }
         isZoomed = true
         CATransaction.begin()
@@ -565,9 +527,7 @@ final class Overlay {
         v.onSwap = { [weak self] dx, dy in self?.swapSelected(dx: dx, dy: dy) }
         v.onIgnore = { [weak self] in self?.toggleIgnoreSelected() }
         v.onToggleIgnoredView = { [weak self] in self?.toggleShowIgnored() }
-        v.onForwardKey = { [weak self] e in self?.forwardKey(e) }
-        v.onEnterFocus = { [weak self] in self?.enterFocusMode() }
-        v.onExitFocus = { [weak self] in self?.exitFocusMode() }
+        v.onTagColor = { [weak self] name in self?.tagSelectedColor(name) }
         w.contentView = v
         view = v
         return w

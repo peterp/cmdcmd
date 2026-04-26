@@ -16,12 +16,12 @@ Requires macOS 14+.
 | `1`–`9` | Pick that tile |
 | `return` | Pick selected tile |
 | `space` (hold) | Peek (zoom selected tile while held) |
-| ⌘`space` (hold) | Peek; on release, enter focus mode on the selected window |
 | click / drag | Pick or drag-to-reorder |
 | ⌘ + arrow | Swap selected tile with neighbour in that direction |
-| ⌘`esc` | Exit focus mode |
 | ⌘`delete` | Ignore / un-ignore selected window |
 | ⌘Y | Toggle "show hidden" view |
+| ⌥`g`/`b`/`r`/`y`/`o`/`p` | Tag selected tile (green/blue/red/yellow/orange/purple) |
+| ⌥`0` | Clear tag on selected tile |
 | `esc` | Dismiss overlay |
 
 Tile order and ignored windows persist across launches via `UserDefaults`. Idle windows (no draw activity for ~0.5s) get a subtle indicator. The "show hidden" view displays every window — ignored ones at reduced opacity — so you can un-ignore them.
@@ -59,7 +59,7 @@ Sources/cmdcmd/
   main.swift          # entry point, wires onboarding + CmdChord into Overlay
   AppIcon.swift       # runtime-drawn placeholder Dock icon
   Onboarding.swift    # first-run permission window
-  Overlay.swift       # overlay window, tile grid, selection, focus mode
+  Overlay.swift       # overlay window, tile grid, selection
   OverlayView.swift   # NSWindow + NSView event router for the overlay
   HintPill.swift      # bottom-center mode-hint label
   Tile.swift          # per-window SCStream preview layer
