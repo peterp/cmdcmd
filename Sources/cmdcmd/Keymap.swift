@@ -30,6 +30,40 @@ enum Action: String, Codable, Hashable {
     case pick7 = "pick-7"
     case pick8 = "pick-8"
     case pick9 = "pick-9"
+
+    var doc: String {
+        switch self {
+        case .pick:         return "Pick the highlighted tile"
+        case .dismiss:      return "Close the overlay (or zoom into the highlighted tile if a selection is active)"
+        case .moveLeft:     return "Move selection left"
+        case .moveRight:    return "Move selection right"
+        case .moveUp:       return "Move selection up"
+        case .moveDown:     return "Move selection down"
+        case .swapLeft:     return "Swap with the tile on the left"
+        case .swapRight:    return "Swap with the tile on the right"
+        case .swapUp:       return "Swap with the tile above"
+        case .swapDown:     return "Swap with the tile below"
+        case .ignore:       return "Ignore / un-ignore the selected window"
+        case .toggleHidden: return "Toggle the 'show hidden' view"
+        case .close:        return "Close the selected window"
+        case .tagGreen:     return "Tag green"
+        case .tagBlue:      return "Tag blue"
+        case .tagRed:       return "Tag red"
+        case .tagYellow:    return "Tag yellow"
+        case .tagOrange:    return "Tag orange"
+        case .tagPurple:    return "Tag purple"
+        case .tagClear:     return "Clear tag"
+        case .pick1:        return "Pick tile 1"
+        case .pick2:        return "Pick tile 2"
+        case .pick3:        return "Pick tile 3"
+        case .pick4:        return "Pick tile 4"
+        case .pick5:        return "Pick tile 5"
+        case .pick6:        return "Pick tile 6"
+        case .pick7:        return "Pick tile 7"
+        case .pick8:        return "Pick tile 8"
+        case .pick9:        return "Pick tile 9"
+        }
+    }
 }
 
 struct Shortcut: Hashable {

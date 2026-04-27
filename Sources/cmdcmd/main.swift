@@ -41,6 +41,7 @@ let appDelegate = AppDelegate()
 app.delegate = appDelegate
 app.finishLaunching()
 
+_ = try? Config.ensureExists()
 let appConfig = Config.load()
 let tracker = SpaceTracker()
 let overlay = Overlay(tracker: tracker, config: appConfig)

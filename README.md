@@ -33,7 +33,7 @@ Tile order and ignored windows persist per display via `UserDefaults`. Idle wind
 
 ### Config file
 
-Right-click the `⌘ ⌘` Dock icon and pick **Open Config…** — that creates `~/Library/Application Support/cmdcmd/config.json` (if missing) and opens it in your default editor. Loaded at app launch; restart after edits.
+Right-click the `⌘ ⌘` Dock icon and pick **Open Config…** — that opens `~/Library/Application Support/cmdcmd/config.json` in your default editor. The file is auto-created on first launch, pre-populated with every default binding annotated by an inline `// comment`. Loaded at app launch; restart after edits. `// line comments` are stripped before JSON parsing.
 
 ```json
 {
