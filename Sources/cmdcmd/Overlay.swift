@@ -53,28 +53,19 @@ final class Overlay {
 
     init(tracker: SpaceTracker) {
         self.tracker = tracker
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didDeactivateApplicationNotification,
+        workspaceObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.reclaimFocusIfNeeded()
+            guard let self, self.visible else { return }
+            self.hide(activatePrevious: false)
         }
     }
 
     deinit {
         if let o = workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(o)
-        }
-    }
-
-    private func reclaimFocusIfNeeded() {
-        guard visible else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            guard let self, self.visible, !NSApp.isActive else { return }
-            NSApp.activate(ignoringOtherApps: true)
-            self.window?.makeKeyAndOrderFront(nil)
-            if let v = self.view { self.window?.makeFirstResponder(v) }
+            NotificationCenter.default.removeObserver(o)
         }
     }
 
@@ -127,7 +118,7 @@ final class Overlay {
         activityTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             guard let self else { return }
             let now = CFAbsoluteTimeGetCurrent()
-            for t in self.allTiles { t.updateActivity(now: now, threshold: 0.5) }
+            for t in self.allTiles { t.updateActivity(now: now) }
         }
     }
 
@@ -288,12 +279,12 @@ final class Overlay {
         _ = group.wait(timeout: .now() + 1.0)
     }
 
-    private func hide() {
+    private func hide(activatePrevious: Bool = true) {
         let toStop = allTiles
         stopActivityTimer()
         window?.orderOut(nil)
         visible = false
-        if prevFrontPID != 0,
+        if activatePrevious, prevFrontPID != 0,
            let app = NSRunningApplication(processIdentifier: prevFrontPID) {
             app.activate()
         }

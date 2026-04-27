@@ -9,14 +9,21 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     static func color(forName name: String) -> NSColor? {
         switch name {
-        case "green": return .systemGreen
-        case "blue": return .systemBlue
-        case "red": return .systemRed
-        case "yellow": return .systemYellow
-        case "orange": return .systemOrange
-        case "purple": return .systemPurple
+        case "red": return hex(0xFF5F57)
+        case "yellow": return hex(0xFEBC2E)
+        case "green": return hex(0x28C840)
+        case "orange": return hex(0xFF9500)
+        case "blue": return hex(0x4A9DFF)
+        case "purple": return hex(0xAF52DE)
         default: return nil
         }
+    }
+
+    private static func hex(_ rgb: UInt32) -> NSColor {
+        let r = CGFloat((rgb >> 16) & 0xFF) / 255
+        let g = CGFloat((rgb >> 8) & 0xFF) / 255
+        let b = CGFloat(rgb & 0xFF) / 255
+        return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 
     let scWindow: SCWindow
@@ -29,7 +36,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     private let titlePill: CALayer
     private let titleText: CATextLayer
     private let idleDot: CALayer
-    private var lastSignificantChangeAt: CFAbsoluteTime = 0
+    private var lastSignificantChangeAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
+    private(set) var isIdle: Bool = false
     private var stream: SCStream?
     private var cancelled = false
     private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInteractive)
@@ -60,17 +68,17 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         inner.borderWidth = 1
         outer.addSublayer(inner)
 
-        let dot = CALayer()
-        dot.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
-        dot.cornerRadius = 5
-        dot.opacity = 0
-        inner.addSublayer(dot)
-
         let chip = CALayer()
         chip.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
         chip.masksToBounds = true
         chip.isHidden = true
         inner.addSublayer(chip)
+
+        let dot = CALayer()
+        dot.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        dot.cornerRadius = 5
+        dot.opacity = 0
+        inner.addSublayer(dot)
 
         let chipText = CATextLayer()
         chipText.alignmentMode = .center
@@ -183,6 +191,14 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             )
         }
 
+        let dotSize: CGFloat = 10
+        idleDot.frame = CGRect(
+            x: rect.size.width - dotSize - inset,
+            y: chipFrame.midY - dotSize / 2,
+            width: dotSize,
+            height: dotSize
+        )
+
         let pillX = inset + (chipHidden ? 0 : chipFrame.width + gap)
         let text = (titleText.string as? String) ?? ""
         if !text.isEmpty {
@@ -205,13 +221,6 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             )
         }
 
-        let dotSize: CGFloat = 10
-        idleDot.frame = CGRect(
-            x: rect.size.width - dotSize - inset,
-            y: chipFrame.midY - dotSize / 2,
-            width: dotSize,
-            height: dotSize
-        )
     }
 
     enum Highlight: Equatable {
@@ -323,11 +332,21 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    func updateActivity(now: CFAbsoluteTime, threshold: CFTimeInterval) {
+    func updateActivity(now: CFAbsoluteTime) {
         let elapsed = now - lastSignificantChangeAt
-        let isIdle = elapsed > threshold
-        let target: Float = isIdle ? 1 : 0
-        guard idleDot.opacity != target else { return }
+        let activeWithin: CFTimeInterval = 0.5
+        let idleAfter: CFTimeInterval = 2.5
+        let next: Bool
+        if elapsed < activeWithin {
+            next = false
+        } else if elapsed > idleAfter {
+            next = true
+        } else {
+            return
+        }
+        guard next != isIdle else { return }
+        isIdle = next
+        let target: Float = next ? 1 : 0
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.25)
         idleDot.opacity = target
