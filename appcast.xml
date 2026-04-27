@@ -1,0 +1,25 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>cmdcmd</title>
+        <link>https://raw.githubusercontent.com/peterp/cmdcmd/main/appcast.xml</link>
+        <description>cmdcmd updates</description>
+        <language>en</language>
+        <item>
+            <title>v0.1.3</title>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <ul>
+                    <li>Auto-updates via Sparkle. Future versions install on quit; new versions are checked for daily and via the Dock menu's Check for Updates… item.</li>
+                </ul>
+            ]]></description>
+            <pubDate>Mon, 27 Apr 2026 21:00:00 +0000</pubDate>
+            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.3/cmdcmd.zip"
+                       sparkle:edSignature="i0HeD4eN+tYU1mq2ylUODO6oLPnFME7mSmiDXfIw5pjB7nmE7kCGcud6Fio9uVxQzah/eKnQzIt9/d3EWFEjDw=="
+                       length="1581528"
+                       type="application/octet-stream" />
+        </item>
+    </channel>
+</rss>

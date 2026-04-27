@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import ScreenCaptureKit
+import Sparkle
 
 let args = CommandLine.arguments
 if let i = args.firstIndex(of: "--render-iconset"), i + 1 < args.count {
@@ -19,11 +20,22 @@ app.setActivationPolicy(.regular)
 app.applicationIconImage = AppIcon.makePlaceholder()
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
+
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        let item = NSMenuItem(title: "Open Config…", action: #selector(openConfig), keyEquivalent: "")
-        item.target = self
-        menu.addItem(item)
+        let openItem = NSMenuItem(title: "Open Config…", action: #selector(openConfig), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+        let checkItem = NSMenuItem(title: "Check for Updates…",
+                                   action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                                   keyEquivalent: "")
+        checkItem.target = updaterController
+        menu.addItem(checkItem)
         return menu
     }
 
