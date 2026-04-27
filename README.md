@@ -72,6 +72,24 @@ swift build
 .build/debug/cmdcmd
 ```
 
+## Releasing
+
+Each user-visible change drops a markdown entry into `.changeset/`:
+
+```sh
+./changeset.sh "Short description"           # patch (default)
+./changeset.sh minor "New feature"
+./changeset.sh major "Breaking change"
+```
+
+Cut a release with:
+
+```sh
+./release.sh
+```
+
+That bumps the version (highest level across pending changesets wins), prepends a `CHANGELOG.md` section, regenerates `appcast.xml`, builds + signs the zip with the Sparkle key from 1Password, tags, pushes, and creates the GitHub release. Pending `.changeset/*.md` files are removed by the same commit. See `.changeset/HOWTO.md` for the file format.
+
 ## Permissions
 
 On first launch you'll see an onboarding window explaining what the app needs and why:
