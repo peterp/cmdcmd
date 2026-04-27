@@ -15,11 +15,8 @@ PUBDATE=$(date -u "+%a, %d %b %Y %H:%M:%S +0000")
 ./build-app.sh release
 ditto -c -k --keepParent cmdcmd.app cmdcmd.zip
 
-if [ -n "${SPARKLE_KEY_REF:-}" ]; then
-    SIGN_OUT=$(op read "$SPARKLE_KEY_REF" | .build/artifacts/sparkle/Sparkle/bin/sign_update -f - cmdcmd.zip)
-else
-    SIGN_OUT=$(.build/artifacts/sparkle/Sparkle/bin/sign_update cmdcmd.zip)
-fi
+SPARKLE_KEY_REF="${SPARKLE_KEY_REF:-op://Private/cmdcmd Sparkle key/password}"
+SIGN_OUT=$(op read "$SPARKLE_KEY_REF" | .build/artifacts/sparkle/Sparkle/bin/sign_update -f - cmdcmd.zip)
 SIZE=$(stat -f%z cmdcmd.zip)
 ED_SIG=$(printf '%s' "$SIGN_OUT" | sed -E 's/.*edSignature="([^"]+)".*/\1/')
 
