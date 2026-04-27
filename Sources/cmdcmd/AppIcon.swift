@@ -7,34 +7,38 @@ enum AppIcon {
         image.lockFocus()
         defer { image.unlockFocus() }
 
-        let rect = NSRect(origin: .zero, size: size)
-        let bgRadius = side * (110.0 / 512.0)
-        let bg = NSBezierPath(roundedRect: rect, xRadius: bgRadius, yRadius: bgRadius)
+        let canvas = NSRect(origin: .zero, size: size)
+        let margin = side * (100.0 / 1024.0)
+        let art = canvas.insetBy(dx: margin, dy: margin)
+        let artSide = art.width
+
+        let bgRadius = artSide * (185.0 / 824.0)
+        let bg = NSBezierPath(roundedRect: art, xRadius: bgRadius, yRadius: bgRadius)
         NSColor.black.setFill()
         bg.fill()
 
-        let innerInset = side * (10.0 / 512.0)
-        let inner = rect.insetBy(dx: innerInset, dy: innerInset)
-        let strokeRadius = side * (100.0 / 512.0)
+        let innerInset = artSide * (10.0 / 824.0)
+        let inner = art.insetBy(dx: innerInset, dy: innerInset)
+        let strokeRadius = artSide * (170.0 / 824.0)
         let stroke = NSBezierPath(roundedRect: inner, xRadius: strokeRadius, yRadius: strokeRadius)
         NSColor.white.withAlphaComponent(0.12).setStroke()
-        stroke.lineWidth = max(1, side * (2.0 / 512.0))
+        stroke.lineWidth = max(1, artSide * (2.0 / 824.0))
         stroke.stroke()
 
         let text = "⌘⌘"
         let style = NSMutableParagraphStyle()
         style.alignment = .center
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: side * (240.0 / 512.0), weight: .regular),
+            .font: NSFont.systemFont(ofSize: artSide * (240.0 / 512.0), weight: .regular),
             .foregroundColor: NSColor.white,
             .paragraphStyle: style,
-            .kern: -side * (8.0 / 512.0),
+            .kern: -artSide * (8.0 / 512.0),
         ]
         let attr = NSAttributedString(string: text, attributes: attrs)
         let textSize = attr.size()
         let textRect = NSRect(
-            x: (size.width - textSize.width) / 2,
-            y: (size.height - textSize.height) / 2 - side * (8.0 / 512.0),
+            x: art.midX - textSize.width / 2,
+            y: art.midY - textSize.height / 2 - artSide * (8.0 / 512.0),
             width: textSize.width,
             height: textSize.height
         )
