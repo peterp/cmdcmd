@@ -78,9 +78,14 @@ struct Shortcut: Hashable {
 final class Keymap {
     private var bindings: [Shortcut: Action] = [:]
 
-    init(overrides: [String: Action] = [:]) {
+    init(overrides: [String: Action] = [:], vimBindings: Bool = true) {
         for (raw, action) in Self.defaults {
             if let s = Shortcut.parse(raw) { bindings[s] = action }
+        }
+        if vimBindings {
+            for (raw, action) in Self.vimDefaults {
+                if let s = Shortcut.parse(raw) { bindings[s] = action }
+            }
         }
         for (raw, action) in overrides {
             if let s = Shortcut.parse(raw) { bindings[s] = action }
@@ -105,5 +110,9 @@ final class Keymap {
         "opt+o": .tagOrange, "opt+p": .tagPurple, "opt+0": .tagClear,
         "1": .pick1, "2": .pick2, "3": .pick3, "4": .pick4, "5": .pick5,
         "6": .pick6, "7": .pick7, "8": .pick8, "9": .pick9,
+    ]
+
+    static let vimDefaults: [String: Action] = [
+        "h": .moveLeft, "l": .moveRight, "k": .moveUp, "j": .moveDown,
     ]
 }

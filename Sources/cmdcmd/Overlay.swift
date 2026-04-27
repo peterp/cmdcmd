@@ -18,6 +18,7 @@ final class Overlay {
     private var prevFrontTitle: String = ""
     private var showIgnored: Bool = false
     private var dragState: DragState?
+    private var lastLetterJump: String?
     private let tracker: SpaceTracker
     private var config: Config
 
@@ -48,7 +49,13 @@ final class Overlay {
         }
     }
 
+    private static var usageOrder: [String] {
+        get { (UserDefaults.standard.array(forKey: "appUsageOrder") as? [String]) ?? [] }
+        set { UserDefaults.standard.set(Array(newValue.prefix(128)), forKey: "appUsageOrder") }
+    }
+
     private var workspaceObserver: NSObjectProtocol?
+    private var appActivationObserver: NSObjectProtocol?
     private var activityTimer: Timer?
     private var keyEventTap: CFMachPort?
     private var keyEventTapRunLoopSource: CFRunLoopSource?
@@ -65,6 +72,14 @@ final class Overlay {
             guard let self, self.visible, !self.isPicking else { return }
             self.hide(activatePrevious: false)
         }
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            Self.recordUse(of: app)
+        }
     }
 
     private var isPicking = false
@@ -73,11 +88,14 @@ final class Overlay {
         if let o = workspaceObserver {
             NotificationCenter.default.removeObserver(o)
         }
+        if let o = appActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(o)
+        }
     }
 
     func updateConfig(_ config: Config) {
         self.config = config
-        view?.keymap = Keymap(overrides: config.bindings)
+        view?.keymap = Keymap(overrides: config.bindings, vimBindings: config.vimBindings)
     }
 
     func toggle() {
@@ -104,7 +122,9 @@ final class Overlay {
     }
 
     private func show() {
-        prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        let prevApp = NSWorkspace.shared.frontmostApplication
+        prevFrontPID = prevApp?.processIdentifier ?? 0
+        if let prevApp { Self.recordUse(of: prevApp) }
         prevFrontTitle = focusedWindowTitle(pid: prevFrontPID) ?? ""
         let screen = Self.cursorScreen()
         activeScreen = screen
@@ -207,9 +227,10 @@ final class Overlay {
             let candidates = tracker.windows().filter(Self.isCapturableMinimal).filter { Self.windowMostlyOn(displayBounds: frames.display, window: $0) }
             await MainActor.run {
                 guard visible else { return }
-                let w = window ?? makeWindow(frame: frames.visible)
+                let panelFrame = minimalPanelFrame(tileCount: candidates.count, visibleFrame: frames.visible)
+                let w = window ?? makeWindow(frame: panelFrame)
                 window = w
-                w.setFrame(frames.visible, display: false)
+                w.setFrame(panelFrame, display: false)
                 w.alphaValue = 1
                 NSApp.activate(ignoringOtherApps: true)
                 w.makeKeyAndOrderFront(nil)
@@ -221,7 +242,9 @@ final class Overlay {
                 CATransaction.setDisableActions(true)
                 installMinimalTiles(candidates: candidates)
                 CATransaction.commit()
-                animateShowFromFocused(in: w)
+                if config.animations {
+                    w.fadeInAndUp(distance: 28, duration: 0.125)
+                }
             }
             return
         }
@@ -308,6 +331,20 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         return total > 0 && interArea / total >= 0.5
     }
 
+    private func minimalPanelFrame(tileCount: Int, visibleFrame: CGRect) -> CGRect {
+        let count = max(1, tileCount)
+        let target: CGFloat = 64
+        let gap: CGFloat = 12
+        let padX: CGFloat = 22
+        let padY: CGFloat = 18
+        let maxCols = max(1, Int((visibleFrame.width * 0.72 - padX * 2 + gap) / (target + gap)))
+        let cols = min(count, maxCols)
+        let rows = Int(ceil(Double(count) / Double(cols)))
+        let width = CGFloat(cols) * target + CGFloat(max(0, cols - 1)) * gap + padX * 2
+        let height = CGFloat(rows) * target + CGFloat(max(0, rows - 1)) * gap + padY * 2
+        return CGRect(x: visibleFrame.midX - width / 2, y: visibleFrame.midY - height / 2 + 42, width: width, height: height)
+    }
+
     private func installMinimalTiles(candidates: [SpaceWindow]) {
         installOrderedTiles(candidates.map { Tile(spaceWindow: $0) })
     }
@@ -323,22 +360,23 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
     private func installOrderedTiles(_ mcTiles: [Tile]) {
         let saved = savedOrder
-        let ordered: [Tile]
-        if saved.isEmpty {
-            ordered = mcTiles
-        } else {
-            let presentIDs = Set(mcTiles.map { $0.windowID })
-            let knownInOrder = saved.filter { presentIDs.contains($0) }
-            let knownIDs = Set(knownInOrder)
-            let known = knownInOrder.compactMap { wid in mcTiles.first(where: { $0.windowID == wid }) }
-            let unknown = mcTiles.filter { !knownIDs.contains($0.windowID) }
-            ordered = known + unknown
+        let usage = Self.usageOrder
+        let savedRanks = Dictionary(uniqueKeysWithValues: saved.enumerated().map { ($0.element, $0.offset) })
+        let usageRanks = Dictionary(uniqueKeysWithValues: usage.enumerated().map { ($0.element, $0.offset) })
+        let ordered = mcTiles.sorted { a, b in
+            let ar = usageRanks[Self.usageKey(for: a)] ?? Int.max
+            let br = usageRanks[Self.usageKey(for: b)] ?? Int.max
+            if ar != br { return ar < br }
+            let asr = savedRanks[a.windowID] ?? Int.max
+            let bsr = savedRanks[b.windowID] ?? Int.max
+            if asr != bsr { return asr < bsr }
+            return a.windowID < b.windowID
         }
         savedOrder = ordered.map { $0.windowID }
 
         allTiles = ordered
         for t in ordered {
-            window?.contentView?.layer?.addSublayer(t.layer)
+            view?.layer?.addSublayer(t.layer)
         }
         rebuildDisplayed()
         if let i = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.sourceTitle ?? "") == prevFrontTitle })
@@ -437,6 +475,19 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         }
     }
 
+    private func selectApp(startingWith letter: String) {
+        guard config.letterJump, !tiles.isEmpty else { return }
+        let needle = letter.lowercased()
+        let start = lastLetterJump == needle ? selectedIndex + 1 : 0
+        let orderedIndices = Array(start..<tiles.count) + Array(0..<min(start, tiles.count))
+        guard let match = orderedIndices.first(where: { index in
+            tiles[index].ownerName.lowercased().hasPrefix(needle)
+        }) else { return }
+        lastLetterJump = needle
+        selectedIndex = match
+        updateSelection()
+    }
+
     private func closeSelected() {
         guard tiles.indices.contains(selectedIndex) else { return }
         let tile = tiles[selectedIndex]
@@ -512,15 +563,16 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         selectedIndex = 0
         showIgnored = false
         view?.resetMomentaryPeek()
+        lastLetterJump = nil
         hint.hide()
         Task {
-            for t in toStop { await t.stop() }
+            for t in toStop {
+                t.layer.removeFromSuperlayer()
+                await t.stop()
+            }
         }
         isZoomed = false
         savedFrames = []
-        if let root = window?.contentView?.layer {
-            root.sublayers?.forEach { $0.removeFromSuperlayer() }
-        }
         hint.reset()
     }
 
@@ -534,9 +586,9 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
     private func layoutTiles(in bounds: NSRect) {
         if config.minimalMode {
-            let target: CGFloat = 58
-            let gap: CGFloat = 10
-            let cols = min(max(1, tiles.count), max(1, Int((bounds.width - 48 + gap) / (target + gap))))
+            let target: CGFloat = 64
+            let gap: CGFloat = 12
+            let cols = min(max(1, tiles.count), max(1, Int((bounds.width - 44 + gap) / (target + gap))))
             let rows = Int(ceil(Double(tiles.count) / Double(cols)))
             let totalWidth = CGFloat(cols) * target + CGFloat(max(0, cols - 1)) * gap
             let totalHeight = CGFloat(rows) * target + CGFloat(max(0, rows - 1)) * gap
@@ -840,6 +892,27 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         savedFrames = []
     }
 
+    private static func recordUse(of app: NSRunningApplication) {
+        guard app.processIdentifier != getpid(), app.activationPolicy == .regular else { return }
+        let key = usageKey(pid: app.processIdentifier, bundleIdentifier: app.bundleIdentifier)
+        var order = usageOrder.filter { $0 != key }
+        order.insert(key, at: 0)
+        usageOrder = order
+    }
+
+    private static func usageKey(for tile: Tile) -> String {
+        usageKey(pid: tile.ownerPID, bundleIdentifier: tile.ownerBundleIdentifier)
+    }
+
+    private static func usageKey(pid: pid_t, bundleIdentifier: String?) -> String {
+        if let bundleIdentifier, !bundleIdentifier.isEmpty { return bundleIdentifier }
+        return "pid:\(pid)"
+    }
+
+    private static func isCommandTabApp(pid: pid_t) -> Bool {
+        NSRunningApplication(processIdentifier: pid)?.activationPolicy == .regular
+    }
+
     private static let systemOwners: Set<String> = [
         "Window Server", "Dock", "WindowManager", "Control Center",
         "Spotlight", "NotificationCenter", "SystemUIServer",
@@ -850,6 +923,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard let app = w.owningApplication else { return false }
         if app.processID == getpid() { return false }
         if systemOwners.contains(app.applicationName) { return false }
+        guard isCommandTabApp(pid: app.processID) else { return false }
         if w.frame.width < 200 || w.frame.height < 200 { return false }
         if !w.isOnScreen && w.windowLayer != 0 { return false }
         return true
@@ -858,6 +932,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     private static func isCapturableMinimal(_ w: SpaceWindow) -> Bool {
         if w.ownerPID == getpid() { return false }
         if systemOwners.contains(w.ownerName) { return false }
+        guard isCommandTabApp(pid: w.ownerPID) else { return false }
         if w.bounds.width < 200 || w.bounds.height < 200 { return false }
         return true
     }
@@ -874,21 +949,36 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         w.backgroundColor = .clear
         w.isOpaque = false
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let container = NSView(frame: frame)
+        let container = NSView(frame: NSRect(origin: .zero, size: frame.size))
         container.autoresizingMask = [.width, .height]
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.black.withAlphaComponent(config.minimalMode ? 0.08 : 0.18).cgColor
+        container.layer?.backgroundColor = config.minimalMode ? NSColor.clear.cgColor : NSColor.black.withAlphaComponent(0.18).cgColor
+        if config.minimalMode {
+            let blur = NSVisualEffectView(frame: container.bounds)
+            blur.autoresizingMask = [.width, .height]
+            blur.material = .hudWindow
+            blur.blendingMode = .withinWindow
+            blur.state = .active
+            blur.wantsLayer = true
+            blur.layer?.cornerRadius = 25
+            blur.layer?.cornerCurve = .continuous
+            blur.layer?.masksToBounds = true
+            blur.layer?.borderWidth = 1
+            blur.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+            container.addSubview(blur)
+        }
         let v = OverlayView(frame: container.bounds)
         v.autoresizingMask = [.width, .height]
         v.wantsLayer = true
         v.layer?.backgroundColor = .clear
-        v.keymap = Keymap(overrides: config.bindings)
+        v.keymap = Keymap(overrides: config.bindings, vimBindings: config.vimBindings)
         v.onAction = { [weak self] action in self?.dispatch(action) }
         v.onSpaceDown = { [weak self] in self?.beginZoom() }
         v.onSpaceUp = { [weak self] in self?.endZoom() }
         v.onMouseDown = { [weak self] p in self?.mouseDownAt(p) }
         v.onMouseDragged = { [weak self] p in self?.mouseDraggedAt(p) }
         v.onMouseUp = { [weak self] p in self?.mouseUpAt(p) }
+        v.onLetter = { [weak self] letter in self?.selectApp(startingWith: letter) }
         container.addSubview(v)
         w.contentView = container
         view = v

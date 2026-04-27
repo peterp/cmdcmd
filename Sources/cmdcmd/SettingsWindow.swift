@@ -1,247 +1,273 @@
 import AppKit
+import SwiftUI
 
 final class SettingsWindowController: NSWindowController {
-    private let animationsButton = NSButton(checkboxWithTitle: "Animations", target: nil, action: nil)
-    private let minimalButton = NSButton(checkboxWithTitle: "Minimal icon mode", target: nil, action: nil)
-    private let displayModeControl = NSSegmentedControl(labels: ["Dock", "Menu Bar", "Hidden"], trackingMode: .selectOne, target: nil, action: nil)
-    private let triggerField = NSTextField(string: "")
-    private let statusLabel = NSTextField(labelWithString: "")
-    private var config: Config
-    var onSave: ((Config) -> Void)?
+    private let model: SettingsModel
+    var onSave: ((Config) -> Void)? {
+        get { model.onSave }
+        set { model.onSave = newValue }
+    }
 
     init(config: Config) {
-        self.config = config
+        model = SettingsModel(config: config)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 390),
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "cmdcmd Settings"
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
         window.center()
+        window.contentView = NSHostingView(rootView: SettingsRootView(model: model))
         super.init(window: window)
-        build()
-        load(config)
     }
 
     required init?(coder: NSCoder) { nil }
+}
 
-    private func build() {
-        guard let content = window?.contentView else { return }
-        let visual = NSVisualEffectView()
-        visual.blendingMode = .behindWindow
-        visual.material = .hudWindow
-        visual.state = .active
-        visual.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(visual)
+private final class SettingsModel: ObservableObject {
+    @Published var animations: Bool { didSet { save() } }
+    @Published var minimalMode: Bool { didSet { save() } }
+    @Published var displayMode: DisplayMode { didSet { save() } }
+    @Published var vimBindings: Bool { didSet { save() } }
+    @Published var letterJump: Bool { didSet { save() } }
+    private let trigger: String?
+    @Published var status: String = ""
+    var onSave: ((Config) -> Void)?
 
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 18
-        root.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(root)
-
-        let header = NSStackView()
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 14
-
-        let icon = NSImageView(image: AppIcon.makePlaceholder())
-        icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.wantsLayer = true
-        icon.layer?.cornerRadius = 14
-        icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
-        header.addArrangedSubview(icon)
-
-        let titleStack = NSStackView()
-        titleStack.orientation = .vertical
-        titleStack.alignment = .leading
-        titleStack.spacing = 3
-        let title = NSTextField(labelWithString: "cmdcmd")
-        title.font = .systemFont(ofSize: 26, weight: .semibold)
-        title.textColor = .labelColor
-        let subtitle = NSTextField(labelWithString: "Fast window switching, tuned for how visible you want the app to be.")
-        subtitle.font = .systemFont(ofSize: 13, weight: .regular)
-        subtitle.textColor = .secondaryLabelColor
-        titleStack.addArrangedSubview(title)
-        titleStack.addArrangedSubview(subtitle)
-        header.addArrangedSubview(titleStack)
-        root.addArrangedSubview(header)
-
-        let behaviorCard = makeCard()
-        let behaviorStack = makeCardStack(in: behaviorCard)
-        behaviorStack.addArrangedSubview(makeSectionTitle("Behavior"))
-        animationsButton.target = self
-        animationsButton.action = #selector(save)
-        animationsButton.controlSize = .large
-        behaviorStack.addArrangedSubview(makeSettingRow(title: "Motion", detail: "Use smooth open, pick, and peek transitions.", control: animationsButton))
-        minimalButton.target = self
-        minimalButton.action = #selector(save)
-        minimalButton.controlSize = .large
-        behaviorStack.addArrangedSubview(makeSettingRow(title: "Minimal mode", detail: "Show app icons instead of live window previews.", control: minimalButton))
-        root.addArrangedSubview(behaviorCard)
-
-        let presenceCard = makeCard()
-        let presenceStack = makeCardStack(in: presenceCard)
-        presenceStack.addArrangedSubview(makeSectionTitle("Presence"))
-        displayModeControl.segmentStyle = .capsule
-        displayModeControl.controlSize = .large
-        displayModeControl.target = self
-        displayModeControl.action = #selector(save)
-        presenceStack.addArrangedSubview(makeSettingRow(title: "Show app in", detail: "Hidden mode can be reopened from Launchpad, Spotlight, Finder, or by launching the app again.", control: displayModeControl))
-        root.addArrangedSubview(presenceCard)
-
-        let shortcutCard = makeCard()
-        let shortcutStack = makeCardStack(in: shortcutCard)
-        shortcutStack.addArrangedSubview(makeSectionTitle("Shortcut"))
-        triggerField.placeholderString = "cmd-cmd"
-        triggerField.target = self
-        triggerField.action = #selector(save)
-        triggerField.controlSize = .large
-        triggerField.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
-        triggerField.lineBreakMode = .byTruncatingTail
-        triggerField.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        shortcutStack.addArrangedSubview(makeSettingRow(title: "Trigger", detail: "Restart after changing this shortcut.", control: triggerField))
-        root.addArrangedSubview(shortcutCard)
-
-        let footer = NSStackView()
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
-        footer.spacing = 10
-        let saveButton = NSButton(title: "Save", target: self, action: #selector(save))
-        saveButton.bezelStyle = .rounded
-        saveButton.controlSize = .large
-        saveButton.keyEquivalent = "\r"
-        let configButton = NSButton(title: "Open Config…", target: self, action: #selector(openConfig))
-        configButton.bezelStyle = .rounded
-        configButton.controlSize = .large
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        statusLabel.lineBreakMode = .byTruncatingTail
-        footer.addArrangedSubview(saveButton)
-        footer.addArrangedSubview(configButton)
-        footer.addArrangedSubview(statusLabel)
-        root.addArrangedSubview(footer)
-
-        NSLayoutConstraint.activate([
-            visual.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            visual.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            visual.topAnchor.constraint(equalTo: content.topAnchor),
-            visual.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            root.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
-            root.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
-            root.topAnchor.constraint(equalTo: content.topAnchor, constant: 34),
-        ])
+    init(config: Config) {
+        animations = config.animations
+        minimalMode = config.minimalMode
+        displayMode = config.displayMode
+        vimBindings = config.vimBindings
+        letterJump = config.letterJump
+        trigger = config.trigger
     }
 
-    private func makeCard() -> NSView {
-        let view = NSVisualEffectView()
-        view.material = .contentBackground
-        view.blendingMode = .withinWindow
-        view.state = .active
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 18
-        view.layer?.cornerCurve = .continuous
-        view.layer?.borderWidth = 1
-        view.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
-        view.widthAnchor.constraint(equalToConstant: 444).isActive = true
-        return view
-    }
-
-    private func makeCardStack(in view: NSView) -> NSStackView {
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
-        ])
-        return stack
-    }
-
-    private func makeSectionTitle(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text.uppercased())
-        label.font = .systemFont(ofSize: 11, weight: .bold)
-        label.textColor = .tertiaryLabelColor
-        return label
-    }
-
-    private func makeSettingRow(title: String, detail: String, control: NSView) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 12
-        row.widthAnchor.constraint(equalToConstant: 412).isActive = true
-
-        let text = NSStackView()
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        titleLabel.textColor = .labelColor
-        let detailLabel = NSTextField(wrappingLabelWithString: detail)
-        detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.maximumNumberOfLines = 2
-        text.addArrangedSubview(titleLabel)
-        text.addArrangedSubview(detailLabel)
-        row.addArrangedSubview(text)
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        row.addArrangedSubview(spacer)
-        row.addArrangedSubview(control)
-        return row
-    }
-
-    private func load(_ config: Config) {
-        animationsButton.state = config.animations ? .on : .off
-        minimalButton.state = config.minimalMode ? .on : .off
-        switch config.displayMode {
-        case .dock: displayModeControl.selectedSegment = 0
-        case .menuBar: displayModeControl.selectedSegment = 1
-        case .hidden: displayModeControl.selectedSegment = 2
-        }
-        triggerField.stringValue = config.triggerSpec
-    }
-
-    @objc private func save() {
-        config.animations = animationsButton.state == .on
-        config.minimalMode = minimalButton.state == .on
-        switch displayModeControl.selectedSegment {
-        case 1: config.displayMode = .menuBar
-        case 2: config.displayMode = .hidden
-        default: config.displayMode = .dock
-        }
-        let rawTrigger = triggerField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        config.trigger = rawTrigger.isEmpty || rawTrigger == "cmd-cmd" ? nil : rawTrigger
+    func save() {
+        var config = Config.default
+        config.animations = animations
+        config.minimalMode = minimalMode
+        config.displayMode = displayMode
+        config.trigger = trigger
+        config.vimBindings = vimBindings
+        config.letterJump = letterJump
         do {
             try Config.save(config)
             onSave?(config)
-            statusLabel.stringValue = "Saved. Trigger changes apply after restart."
+            status = "Saved"
         } catch {
-            statusLabel.stringValue = "Save failed: \(error.localizedDescription)"
+            status = "Save failed: \(error.localizedDescription)"
             Log.write("settings save failed: \(error)")
         }
     }
 
-    @objc private func openConfig() {
+    func openConfig() {
         do {
             let url = try Config.ensureExists()
             NSWorkspace.shared.open(url)
         } catch {
-            statusLabel.stringValue = "Open failed: \(error.localizedDescription)"
+            status = "Open failed: \(error.localizedDescription)"
             Log.write("openConfig failed: \(error)")
         }
+    }
+}
+
+private struct SettingsRootView: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                settingsCard
+                presenceCard
+                inputCard
+                footer
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 34)
+            .padding(.bottom, 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(.regularMaterial)
+        .frame(minWidth: 560, minHeight: 440)
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            Image(nsImage: AppIcon.makePlaceholder())
+                .resizable()
+                .frame(width: 46, height: 46)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("cmdcmd")
+                    .font(.system(size: 25, weight: .semibold))
+                Text("Fast app switching with a small native HUD.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            SettingsHeaderActionButton(title: "Open Config", helpText: "Open the JSON config file") {
+                model.openConfig()
+            }
+        }
+    }
+
+    private var settingsCard: some View {
+        SettingsCard {
+            SettingsCardRow("Animations", subtitle: "Use smooth open, pick, and peek transitions.") {
+                Toggle("", isOn: $model.animations)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+            SettingsCardDivider()
+            SettingsCardRow("Minimal icon mode", subtitle: "Show the LeaderKey-style app icon HUD instead of live window previews.") {
+                Toggle("", isOn: $model.minimalMode)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+        }
+    }
+
+    private var presenceCard: some View {
+        SettingsCard {
+            SettingsCardRow("Show app in", subtitle: "Hidden mode can be reopened from Launchpad, Spotlight, Finder, or by launching the app again.", controlWidth: 210) {
+                Picker("", selection: $model.displayMode) {
+                    Text("Dock").tag(DisplayMode.dock)
+                    Text("Menu Bar").tag(DisplayMode.menuBar)
+                    Text("Hidden").tag(DisplayMode.hidden)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+        }
+    }
+
+    private var inputCard: some View {
+        SettingsCard {
+            SettingsCardRow("Vim navigation", subtitle: "Use h, j, k, and l to move between apps.") {
+                Toggle("", isOn: $model.vimBindings)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+            SettingsCardDivider()
+            SettingsCardRow("First-letter app jump", subtitle: "Press an app’s first letter to select it; repeat to cycle matches.") {
+                Toggle("", isOn: $model.letterJump)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Button("Save") { model.save() }
+                .keyboardShortcut(.defaultAction)
+            Text(model.status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+        }
+    }
+}
+
+private struct SettingsHeaderActionButton: View {
+    let title: String
+    let helpText: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.34))
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.22), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .controlSize(.small)
+        .help(helpText)
+    }
+}
+
+private struct SettingsCard<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.38))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.22), lineWidth: 1)
+        )
+    }
+}
+
+private struct SettingsCardRow<Trailing: View>: View {
+    let title: String
+    let subtitle: String?
+    let controlWidth: CGFloat?
+    @ViewBuilder let trailing: Trailing
+
+    init(_ title: String, subtitle: String? = nil, controlWidth: CGFloat? = nil, @ViewBuilder trailing: () -> Trailing) {
+        self.title = title
+        self.subtitle = subtitle
+        self.controlWidth = controlWidth
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: subtitle == nil ? 0 : 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Group {
+                if let controlWidth {
+                    trailing.frame(width: controlWidth, alignment: .trailing)
+                } else {
+                    trailing
+                }
+            }
+            .layoutPriority(1)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsCardDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(0.22))
+            .frame(height: 1)
+            .padding(.leading, 14)
     }
 }

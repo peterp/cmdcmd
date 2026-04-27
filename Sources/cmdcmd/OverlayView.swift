@@ -1,8 +1,17 @@
 import AppKit
 
-final class OverlayWindow: NSWindow {
+final class OverlayWindow: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: style.union(.nonactivatingPanel), backing: backingStoreType, defer: flag)
+        isFloatingPanel = true
+        isReleasedWhenClosed = false
+        animationBehavior = .none
+        backgroundColor = .clear
+        isOpaque = false
+    }
 }
 
 final class OverlayView: NSView {
@@ -13,6 +22,7 @@ final class OverlayView: NSView {
     var onMouseDown: ((NSPoint) -> Void)?
     var onMouseDragged: ((NSPoint) -> Void)?
     var onMouseUp: ((NSPoint) -> Void)?
+    var onLetter: ((String) -> Void)?
     private var momentaryPeek = false
 
     override var acceptsFirstResponder: Bool { true }
@@ -28,6 +38,14 @@ final class OverlayView: NSView {
         }
         if let action = keymap.action(for: event) {
             onAction?(action)
+            return true
+        }
+        if bareMods.isEmpty,
+           let chars = event.charactersIgnoringModifiers?.lowercased(),
+           chars.count == 1,
+           let scalar = chars.unicodeScalars.first,
+           CharacterSet.lowercaseLetters.contains(scalar) {
+            onLetter?(chars)
             return true
         }
         return false

@@ -31,6 +31,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     let sourceFrame: CGRect
     let sourceTitle: String?
     let ownerPID: pid_t
+    let ownerBundleIdentifier: String?
+    let ownerName: String
     let ignoreKey: String
     let layer: CALayer
     private let content: CALayer
@@ -52,6 +54,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         self.sourceFrame = scWindow.frame
         self.sourceTitle = scWindow.title
         self.ownerPID = ownerPID
+        self.ownerBundleIdentifier = scWindow.owningApplication?.bundleIdentifier
+        self.ownerName = scWindow.owningApplication?.applicationName ?? NSRunningApplication(processIdentifier: ownerPID)?.localizedName ?? ""
         self.minimalMode = minimalMode
         let bid = scWindow.owningApplication?.bundleIdentifier ?? ""
         let title = scWindow.title ?? ""
@@ -66,7 +70,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         outer.borderColor = NSColor.clear.cgColor
         outer.borderWidth = 0
         let inner = CALayer()
-        inner.backgroundColor = minimalMode ? NSColor.black.withAlphaComponent(0.24).cgColor : NSColor(white: 0.08, alpha: 1).cgColor
+        inner.backgroundColor = minimalMode ? NSColor.clear.cgColor : NSColor(white: 0.08, alpha: 1).cgColor
         inner.cornerRadius = minimalMode ? 14 : 9
         inner.contentsGravity = minimalMode ? .resizeAspect : .resizeAspect
         inner.minificationFilter = .trilinear
@@ -135,6 +139,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         self.sourceFrame = spaceWindow.bounds
         self.sourceTitle = spaceWindow.title
         self.ownerPID = spaceWindow.ownerPID
+        self.ownerBundleIdentifier = NSRunningApplication(processIdentifier: spaceWindow.ownerPID)?.bundleIdentifier
+        self.ownerName = spaceWindow.ownerName
         self.minimalMode = true
         self.ignoreKey = "\(spaceWindow.ownerName)|||\(spaceWindow.title)"
 
@@ -147,7 +153,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         outer.borderColor = NSColor.clear.cgColor
         outer.borderWidth = 0
         let inner = CALayer()
-        inner.backgroundColor = NSColor.black.withAlphaComponent(0.24).cgColor
+        inner.backgroundColor = NSColor.clear.cgColor
         inner.cornerRadius = 14
         inner.contentsGravity = .resizeAspect
         inner.minificationFilter = .trilinear
@@ -243,7 +249,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func updateLabel() {
         let trimmed = windowTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let n = currentNumber {
+        if let n = currentNumber, !minimalMode {
             numberText.string = "\(n)"
             numberChip.isHidden = false
         } else {
@@ -258,12 +264,12 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     func setFrame(_ rect: CGRect) {
         layer.frame = rect
         if minimalMode {
-            let iconSide = min(rect.width, rect.height) * 0.62
+            let iconSide = min(rect.width, rect.height) * 0.68
             content.frame = CGRect(x: (rect.width - iconSide) / 2, y: (rect.height - iconSide) / 2, width: iconSide, height: iconSide)
         } else {
             content.frame = CGRect(origin: .zero, size: rect.size).insetBy(dx: 1, dy: 1)
         }
-        layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerWidth: minimalMode ? 14 : 10, cornerHeight: minimalMode ? 14 : 10, transform: nil)
+        layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerWidth: minimalMode ? 18 : 10, cornerHeight: minimalMode ? 18 : 10, transform: nil)
         layoutLabel()
     }
 
@@ -347,16 +353,18 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         case .none:
             content.borderColor = minimalMode ? NSColor.clear.cgColor : NSColor.white.withAlphaComponent(0.18).cgColor
             content.borderWidth = minimalMode ? 0 : 1
+            layer.backgroundColor = NSColor.clear.cgColor
             layer.borderColor = NSColor.clear.cgColor
             layer.borderWidth = 0
             layer.shadowOpacity = 0
         case .subtle:
             content.borderColor = NSColor.clear.cgColor
             content.borderWidth = 0
-            layer.borderColor = NSColor.controlAccentColor.cgColor
-            layer.borderWidth = minimalMode ? 1.5 : 3
-            layer.shadowColor = NSColor.controlAccentColor.cgColor
-            layer.shadowOpacity = minimalMode ? 0.38 : 0.6
+            layer.backgroundColor = minimalMode ? NSColor.white.withAlphaComponent(0.13).cgColor : NSColor.clear.cgColor
+            layer.borderColor = minimalMode ? NSColor.white.withAlphaComponent(0.24).cgColor : NSColor.controlAccentColor.cgColor
+            layer.borderWidth = minimalMode ? 0.75 : 3
+            layer.shadowColor = (minimalMode ? NSColor.black : NSColor.controlAccentColor).cgColor
+            layer.shadowOpacity = minimalMode ? 0.28 : 0.6
         }
         CATransaction.commit()
     }

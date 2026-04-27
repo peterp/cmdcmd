@@ -12,19 +12,23 @@ struct Config: Codable {
     var displayMode: DisplayMode
     var trigger: String?
     var bindings: [String: Action]
+    var vimBindings: Bool
+    var letterJump: Bool
 
     var triggerSpec: String { trigger ?? "cmd-cmd" }
 
     enum CodingKeys: String, CodingKey {
-        case animations, minimalMode, displayMode, trigger, bindings
+        case animations, minimalMode, displayMode, trigger, bindings, vimBindings, letterJump
     }
 
-    init(animations: Bool, minimalMode: Bool, displayMode: DisplayMode, trigger: String?, bindings: [String: Action]) {
+    init(animations: Bool, minimalMode: Bool, displayMode: DisplayMode, trigger: String?, bindings: [String: Action], vimBindings: Bool, letterJump: Bool) {
         self.animations = animations
         self.minimalMode = minimalMode
         self.displayMode = displayMode
         self.trigger = trigger
         self.bindings = bindings
+        self.vimBindings = vimBindings
+        self.letterJump = letterJump
     }
 
     init(from decoder: Decoder) throws {
@@ -34,9 +38,11 @@ struct Config: Codable {
         displayMode = try c.decodeIfPresent(DisplayMode.self, forKey: .displayMode) ?? .dock
         trigger = try c.decodeIfPresent(String.self, forKey: .trigger)
         bindings = try c.decodeIfPresent([String: Action].self, forKey: .bindings) ?? [:]
+        vimBindings = try c.decodeIfPresent(Bool.self, forKey: .vimBindings) ?? true
+        letterJump = try c.decodeIfPresent(Bool.self, forKey: .letterJump) ?? true
     }
 
-    static let `default` = Config(animations: true, minimalMode: true, displayMode: .dock, trigger: nil, bindings: [:])
+    static let `default` = Config(animations: true, minimalMode: true, displayMode: .dock, trigger: nil, bindings: [:], vimBindings: true, letterJump: true)
 
     static var fileURL: URL {
         URL(fileURLWithPath: NSHomeDirectory())
@@ -50,7 +56,9 @@ struct Config: Codable {
       "displayMode": "dock",
       "trigger": "cmd-cmd",
       "bindings": {
-      }
+      },
+      "vimBindings": true,
+      "letterJump": true
     }
     """
 
