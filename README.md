@@ -33,11 +33,13 @@ Tile order and ignored windows persist per display via `UserDefaults`. Idle wind
 
 ### Config file
 
-Right-click the `⌘ ⌘` Dock icon and pick **Open Config…** — that creates `~/Library/Application Support/cmdcmd/config.json` (if missing) and opens it in your default editor. Loaded at app launch; restart after edits.
+Right-click the `⌘ ⌘` Dock icon and pick **Settings…** for the built-in settings window, or **Open Config…** to edit `~/Library/Application Support/cmdcmd/config.json` directly. Trigger edits require a restart; visual settings apply immediately from the settings window.
 
 ```json
 {
   "animations": true,
+  "minimalMode": true,
+  "displayMode": "dock",
   "trigger": "cmd-cmd",
   "bindings": {
     "h": "move-left",
@@ -50,6 +52,10 @@ Right-click the `⌘ ⌘` Dock icon and pick **Open Config…** — that creates
 ```
 
 `animations: false` skips the show / pick zoom transitions.
+
+`minimalMode: true` is the default. It replaces live window previews with large app icons for a quieter, lighter overlay and avoids asking for Screen Recording permission.
+
+`displayMode` controls where cmdcmd appears: `"dock"`, `"menu-bar"`, or `"hidden"`. Hidden mode removes both Dock and menu bar UI; open the app again from Launchpad/Spotlight/Finder to bring settings back.
 
 `trigger` chooses what summons the overlay. Default `"cmd-cmd"` is the both-Command-keys chord. Anything else is treated as a regular hotkey spec — e.g. `"cmd+shift+space"` or `"f13"` (uses the same shortcut grammar as `bindings`). Hotkeys other than the chord require Accessibility permission to be globally observable.
 
@@ -79,9 +85,9 @@ On first launch you'll see an onboarding window explaining what the app needs an
 - **Screen Recording** — for live tile previews (ScreenCaptureKit).
 - **Accessibility** — for the ⌘⌘ chord listener and to raise / forward keys to the chosen window.
 
-Each row has a Grant button that opens the matching pane in System Settings. Click Continue once both are toggled on. Both are required; the app does nothing without them.
+Minimal mode is the default and does not show the permission onboarding at launch. If you turn off minimal mode, cmdcmd asks for the permissions needed for live previews. Each row has a Grant button that opens the matching pane in System Settings.
 
-The app shows in the Dock as `⌘ ⌘`. Right-click it for **Open Config…** (or quit it the normal way).
+By default the app shows in the Dock as `⌘ ⌘`. Right-click it for **Settings…**, **Open Config…**, or quit it the normal way. You can switch it to menu-bar-only or fully hidden in Settings.
 
 ## Layout
 
@@ -93,7 +99,8 @@ Sources/cmdcmd/
   Overlay.swift       # overlay window, tile grid, selection, animations
   OverlayView.swift   # NSWindow + NSView event router for the overlay
   HintPill.swift      # bottom-center mode-hint label
-  Config.swift        # JSON config loader (animations, trigger, bindings)
+  Config.swift        # JSON config loader (animations, minimal mode, display mode, trigger, bindings)
+  SettingsWindow.swift # built-in settings window
   Keymap.swift        # default shortcuts + override resolver
   HotkeyMonitor.swift # global hotkey trigger (alternative to CmdChord)
   Tile.swift          # per-window SCStream preview layer

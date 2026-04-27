@@ -26,7 +26,10 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 
-    let scWindow: SCWindow
+    let scWindow: SCWindow?
+    let windowID: CGWindowID
+    let sourceFrame: CGRect
+    let sourceTitle: String?
     let ownerPID: pid_t
     let ignoreKey: String
     let layer: CALayer
@@ -36,15 +39,20 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     private let titlePill: CALayer
     private let titleText: CATextLayer
     private let idleDot: CALayer
+    private let minimalMode: Bool
     private var lastSignificantChangeAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private(set) var isIdle: Bool = false
     private var stream: SCStream?
     private var cancelled = false
     private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInteractive)
 
-    init(scWindow: SCWindow, ownerPID: pid_t) {
+    init(scWindow: SCWindow, ownerPID: pid_t, minimalMode: Bool = false) {
         self.scWindow = scWindow
+        self.windowID = CGWindowID(scWindow.windowID)
+        self.sourceFrame = scWindow.frame
+        self.sourceTitle = scWindow.title
         self.ownerPID = ownerPID
+        self.minimalMode = minimalMode
         let bid = scWindow.owningApplication?.bundleIdentifier ?? ""
         let title = scWindow.title ?? ""
         self.ignoreKey = "\(bid)|||\(title)"
@@ -58,14 +66,14 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         outer.borderColor = NSColor.clear.cgColor
         outer.borderWidth = 0
         let inner = CALayer()
-        inner.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
-        inner.cornerRadius = 9
-        inner.contentsGravity = .resizeAspect
+        inner.backgroundColor = minimalMode ? NSColor.black.withAlphaComponent(0.24).cgColor : NSColor(white: 0.08, alpha: 1).cgColor
+        inner.cornerRadius = minimalMode ? 14 : 9
+        inner.contentsGravity = minimalMode ? .resizeAspect : .resizeAspect
         inner.minificationFilter = .trilinear
         inner.magnificationFilter = .linear
         inner.masksToBounds = true
-        inner.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-        inner.borderWidth = 1
+        inner.borderColor = minimalMode ? NSColor.clear.cgColor : NSColor.white.withAlphaComponent(0.18).cgColor
+        inner.borderWidth = minimalMode ? 0 : 1
         outer.addSublayer(inner)
 
         let chip = CALayer()
@@ -116,6 +124,88 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         self.idleDot = dot
         self.windowTitle = scWindow.title ?? ""
         super.init()
+        if minimalMode {
+            installAppIcon()
+        }
+    }
+
+    init(spaceWindow: SpaceWindow) {
+        self.scWindow = nil
+        self.windowID = spaceWindow.windowID
+        self.sourceFrame = spaceWindow.bounds
+        self.sourceTitle = spaceWindow.title
+        self.ownerPID = spaceWindow.ownerPID
+        self.minimalMode = true
+        self.ignoreKey = "\(spaceWindow.ownerName)|||\(spaceWindow.title)"
+
+        let outer = CALayer()
+        outer.masksToBounds = false
+        outer.shadowOpacity = 0
+        outer.shadowRadius = 12
+        outer.shadowOffset = .zero
+        outer.cornerRadius = 10
+        outer.borderColor = NSColor.clear.cgColor
+        outer.borderWidth = 0
+        let inner = CALayer()
+        inner.backgroundColor = NSColor.black.withAlphaComponent(0.24).cgColor
+        inner.cornerRadius = 14
+        inner.contentsGravity = .resizeAspect
+        inner.minificationFilter = .trilinear
+        inner.magnificationFilter = .linear
+        inner.masksToBounds = true
+        inner.borderColor = NSColor.clear.cgColor
+        inner.borderWidth = 0
+        outer.addSublayer(inner)
+
+        let chip = CALayer()
+        chip.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        chip.masksToBounds = true
+        chip.isHidden = true
+        inner.addSublayer(chip)
+
+        let dot = CALayer()
+        dot.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        dot.cornerRadius = 5
+        dot.opacity = 0
+        inner.addSublayer(dot)
+
+        let chipText = CATextLayer()
+        chipText.alignmentMode = .center
+        chipText.foregroundColor = NSColor.white.cgColor
+        chipText.backgroundColor = NSColor.clear.cgColor
+        chipText.font = NSFont.systemFont(ofSize: 12, weight: .bold)
+        chipText.fontSize = 12
+        chipText.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        chipText.string = ""
+        chip.addSublayer(chipText)
+
+        let pill = CALayer()
+        pill.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        pill.masksToBounds = true
+        pill.isHidden = true
+        inner.addSublayer(pill)
+
+        let pillText = CATextLayer()
+        pillText.alignmentMode = .left
+        pillText.truncationMode = .end
+        pillText.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        pillText.backgroundColor = NSColor.clear.cgColor
+        pillText.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        pillText.fontSize = 12
+        pillText.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        pillText.string = ""
+        pill.addSublayer(pillText)
+
+        self.layer = outer
+        self.content = inner
+        self.numberChip = chip
+        self.numberText = chipText
+        self.titlePill = pill
+        self.titleText = pillText
+        self.idleDot = dot
+        self.windowTitle = spaceWindow.title
+        super.init()
+        installAppIcon()
     }
 
     var tintColorName: String? {
@@ -134,6 +224,16 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private let windowTitle: String
+
+    private func installAppIcon() {
+        guard let app = NSRunningApplication(processIdentifier: ownerPID) else { return }
+        let icon = app.icon ?? NSWorkspace.shared.icon(forFile: app.bundleURL?.path ?? "")
+        let size: CGFloat = 64
+        icon.size = NSSize(width: size, height: size)
+        content.contents = icon
+        content.contentsGravity = .resizeAspect
+        content.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+    }
     private var currentNumber: Int?
 
     func setNumber(_ n: Int?) {
@@ -150,26 +250,35 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             numberText.string = ""
             numberChip.isHidden = true
         }
-        titleText.string = trimmed
-        titlePill.isHidden = trimmed.isEmpty
+        titleText.string = minimalMode ? "" : trimmed
+        titlePill.isHidden = minimalMode || trimmed.isEmpty
         layoutLabel()
     }
 
     func setFrame(_ rect: CGRect) {
         layer.frame = rect
-        content.frame = CGRect(origin: .zero, size: rect.size).insetBy(dx: 1, dy: 1)
-        layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerWidth: 10, cornerHeight: 10, transform: nil)
+        if minimalMode {
+            let iconSide = min(rect.width, rect.height) * 0.62
+            content.frame = CGRect(x: (rect.width - iconSide) / 2, y: (rect.height - iconSide) / 2, width: iconSide, height: iconSide)
+        } else {
+            content.frame = CGRect(origin: .zero, size: rect.size).insetBy(dx: 1, dy: 1)
+        }
+        layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerWidth: minimalMode ? 14 : 10, cornerHeight: minimalMode ? 14 : 10, transform: nil)
         layoutLabel()
     }
 
     private func layoutLabel() {
         let rect = content.bounds
         guard rect.width > 0 else { return }
-        let badgeHeight: CGFloat = 22
-        let inset: CGFloat = 8
-        let gap: CGFloat = 6
-        let hPad: CGFloat = 8
-        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let badgeHeight: CGFloat = minimalMode ? 18 : 22
+        let inset: CGFloat = minimalMode ? 2 : 8
+        let gap: CGFloat = minimalMode ? 4 : 6
+        let hPad: CGFloat = minimalMode ? 6 : 8
+        let font = NSFont.systemFont(ofSize: minimalMode ? 10 : 12, weight: .semibold)
+        numberText.font = font
+        numberText.fontSize = font.pointSize
+        titleText.font = font
+        titleText.fontSize = font.pointSize
         let lineHeight = ceil(font.ascender - font.descender)
         let textY = (badgeHeight - lineHeight) / 2
 
@@ -191,7 +300,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             )
         }
 
-        let dotSize: CGFloat = 10
+        let dotSize: CGFloat = minimalMode ? 7 : 10
         idleDot.frame = CGRect(
             x: rect.size.width - dotSize - inset,
             y: chipFrame.midY - dotSize / 2,
@@ -236,8 +345,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         CATransaction.setDisableActions(true)
         switch highlight {
         case .none:
-            content.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-            content.borderWidth = 1
+            content.borderColor = minimalMode ? NSColor.clear.cgColor : NSColor.white.withAlphaComponent(0.18).cgColor
+            content.borderWidth = minimalMode ? 0 : 1
             layer.borderColor = NSColor.clear.cgColor
             layer.borderWidth = 0
             layer.shadowOpacity = 0
@@ -245,15 +354,16 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             content.borderColor = NSColor.clear.cgColor
             content.borderWidth = 0
             layer.borderColor = NSColor.controlAccentColor.cgColor
-            layer.borderWidth = 3
+            layer.borderWidth = minimalMode ? 1.5 : 3
             layer.shadowColor = NSColor.controlAccentColor.cgColor
-            layer.shadowOpacity = 0.6
+            layer.shadowOpacity = minimalMode ? 0.38 : 0.6
         }
         CATransaction.commit()
     }
 
     func start() async {
-        if cancelled { return }
+        if cancelled || minimalMode { return }
+        guard let scWindow else { return }
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
         let config = SCStreamConfiguration()
         let scale = NSScreen.main?.backingScaleFactor ?? 2
@@ -276,7 +386,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             self.stream = s
         } catch {
-            Log.write("tile start failed wid=\(scWindow.windowID): \(error)")
+            Log.write("tile start failed wid=\(windowID): \(error)")
         }
     }
 

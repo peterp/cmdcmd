@@ -7,6 +7,9 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "cmdcmd",
+            swiftSettings: [
+                .unsafeFlags(["-parse-as-library"]),
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("ScreenCaptureKit"),

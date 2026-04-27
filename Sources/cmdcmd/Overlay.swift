@@ -19,7 +19,7 @@ final class Overlay {
     private var showIgnored: Bool = false
     private var dragState: DragState?
     private let tracker: SpaceTracker
-    private let config: Config
+    private var config: Config
 
     private var displayKey: String = "main"
     private var activeScreen: NSScreen?
@@ -50,6 +50,8 @@ final class Overlay {
 
     private var workspaceObserver: NSObjectProtocol?
     private var activityTimer: Timer?
+    private var keyEventTap: CFMachPort?
+    private var keyEventTapRunLoopSource: CFRunLoopSource?
     private let hint = HintPill()
 
     init(tracker: SpaceTracker, config: Config) {
@@ -71,6 +73,11 @@ final class Overlay {
         if let o = workspaceObserver {
             NotificationCenter.default.removeObserver(o)
         }
+    }
+
+    func updateConfig(_ config: Config) {
+        self.config = config
+        view?.keymap = Keymap(overrides: config.bindings)
     }
 
     func toggle() {
@@ -104,6 +111,7 @@ final class Overlay {
         displayKey = Self.displayKeyString(for: screen)
         visible = true
         startActivityTimer()
+        startKeyEventTap()
         Task { await prepareAndShow() }
     }
 
@@ -135,6 +143,44 @@ final class Overlay {
         }
     }
 
+    private func startKeyEventTap() {
+        stopKeyEventTap()
+        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+        let callback: CGEventTapCallBack = { _, type, event, userInfo in
+            guard let userInfo else { return Unmanaged.passUnretained(event) }
+            let overlay = Unmanaged<Overlay>.fromOpaque(userInfo).takeUnretainedValue()
+            guard overlay.visible, let nsEvent = NSEvent(cgEvent: event) else { return Unmanaged.passUnretained(event) }
+            return overlay.handleTappedKeyEvent(nsEvent, type: type) ? nil : Unmanaged.passUnretained(event)
+        }
+        let ref = Unmanaged.passUnretained(self).toOpaque()
+        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap, eventsOfInterest: CGEventMask(mask), callback: callback, userInfo: ref) else {
+            Log.write("overlay key event tap unavailable")
+            return
+        }
+        keyEventTap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        keyEventTapRunLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func stopKeyEventTap() {
+        if let keyEventTap { CGEvent.tapEnable(tap: keyEventTap, enable: false) }
+        if let keyEventTapRunLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), keyEventTapRunLoopSource, .commonModes) }
+        keyEventTap = nil
+        keyEventTapRunLoopSource = nil
+    }
+
+    private func handleTappedKeyEvent(_ event: NSEvent, type: CGEventType) -> Bool {
+        let run = {
+            if type == .keyDown { return self.view?.handleKeyDown(event) == true }
+            if type == .keyUp { return self.view?.handleKeyUp(event) == true }
+            return false
+        }
+        if Thread.isMainThread { return run() }
+        return DispatchQueue.main.sync(execute: run)
+    }
+
     private func stopActivityTimer() {
         activityTimer?.invalidate()
         activityTimer = nil
@@ -153,6 +199,32 @@ final class Overlay {
     }
 
     private func prepareAndShow() async {
+        let frames: (display: CGRect, visible: CGRect) = await MainActor.run {
+            let s = self.activeScreen ?? Self.cursorScreen()
+            return (CGDisplayBounds(Self.displayID(for: s)), s.visibleFrame)
+        }
+        if config.minimalMode {
+            let candidates = tracker.windows().filter(Self.isCapturableMinimal).filter { Self.windowMostlyOn(displayBounds: frames.display, window: $0) }
+            await MainActor.run {
+                guard visible else { return }
+                let w = window ?? makeWindow(frame: frames.visible)
+                window = w
+                w.setFrame(frames.visible, display: false)
+                w.alphaValue = 1
+                NSApp.activate(ignoringOtherApps: true)
+                w.makeKeyAndOrderFront(nil)
+                if let v = view {
+                    w.makeFirstResponder(v)
+                    DispatchQueue.main.async { w.makeFirstResponder(v) }
+                }
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                installMinimalTiles(candidates: candidates)
+                CATransaction.commit()
+                animateShowFromFocused(in: w)
+            }
+            return
+        }
         let scContent: SCShareableContent?
         do {
             scContent = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
@@ -161,10 +233,6 @@ final class Overlay {
             scContent = nil
         }
         let allCandidates = (scContent?.windows ?? []).filter(Self.isCapturable)
-        let frames: (display: CGRect, visible: CGRect) = await MainActor.run {
-            let s = self.activeScreen ?? Self.cursorScreen()
-            return (CGDisplayBounds(Self.displayID(for: s)), s.visibleFrame)
-        }
         let candidates = allCandidates.filter { Self.windowMostlyOn(displayBounds: frames.display, window: $0) }
 
         await MainActor.run {
@@ -173,9 +241,12 @@ final class Overlay {
             window = w
             w.setFrame(frames.visible, display: false)
             w.alphaValue = 1
-            w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-            if let v = view { w.makeFirstResponder(v) }
+            w.makeKeyAndOrderFront(nil)
+            if let v = view {
+                w.makeFirstResponder(v)
+                DispatchQueue.main.async { w.makeFirstResponder(v) }
+            }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             installTiles(candidates: candidates)
@@ -188,9 +259,16 @@ final class Overlay {
     private static let pickDuration: Double = 0.16
 
     private func animateShowFromFocused(in w: NSWindow) {
-        guard tiles.indices.contains(selectedIndex),
-              let bounds = w.contentView?.bounds, bounds.width > 0 else { return }
-        guard config.animations else { return }
+        guard tiles.indices.contains(selectedIndex), config.animations else { return }
+        if config.minimalMode {
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.12)
+            CATransaction.setAnimationTimingFunction(Self.smoothEasing)
+            for t in tiles { t.layer.opacity = 1 }
+            CATransaction.commit()
+            return
+        }
+        guard let bounds = w.contentView?.bounds, bounds.width > 0 else { return }
         let tile = tiles[selectedIndex]
         let gridFrame = tile.layer.frame
 
@@ -222,32 +300,48 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         return total > 0 && interArea / total >= 0.5
     }
 
+    private static func windowMostlyOn(displayBounds: CGRect, window: SpaceWindow) -> Bool {
+        let inter = window.bounds.intersection(displayBounds)
+        guard !inter.isNull else { return false }
+        let interArea = inter.width * inter.height
+        let total = window.bounds.width * window.bounds.height
+        return total > 0 && interArea / total >= 0.5
+    }
+
+    private func installMinimalTiles(candidates: [SpaceWindow]) {
+        installOrderedTiles(candidates.map { Tile(spaceWindow: $0) })
+    }
+
     private func installTiles(candidates: [SCWindow]) {
         let mcTiles: [Tile] = candidates.compactMap { w -> Tile? in
             guard let pid = w.owningApplication?.processID else { return nil }
-            return Tile(scWindow: w, ownerPID: pid)
+            return Tile(scWindow: w, ownerPID: pid, minimalMode: config.minimalMode)
         }
 
+        installOrderedTiles(mcTiles)
+    }
+
+    private func installOrderedTiles(_ mcTiles: [Tile]) {
         let saved = savedOrder
         let ordered: [Tile]
         if saved.isEmpty {
             ordered = mcTiles
         } else {
-            let presentIDs = Set(mcTiles.map { CGWindowID($0.scWindow.windowID) })
+            let presentIDs = Set(mcTiles.map { $0.windowID })
             let knownInOrder = saved.filter { presentIDs.contains($0) }
             let knownIDs = Set(knownInOrder)
-            let known = knownInOrder.compactMap { wid in mcTiles.first(where: { CGWindowID($0.scWindow.windowID) == wid }) }
-            let unknown = mcTiles.filter { !knownIDs.contains(CGWindowID($0.scWindow.windowID)) }
+            let known = knownInOrder.compactMap { wid in mcTiles.first(where: { $0.windowID == wid }) }
+            let unknown = mcTiles.filter { !knownIDs.contains($0.windowID) }
             ordered = known + unknown
         }
-        savedOrder = ordered.map { CGWindowID($0.scWindow.windowID) }
+        savedOrder = ordered.map { $0.windowID }
 
         allTiles = ordered
         for t in ordered {
             window?.contentView?.layer?.addSublayer(t.layer)
         }
         rebuildDisplayed()
-        if let i = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.scWindow.title ?? "") == prevFrontTitle })
+        if let i = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.sourceTitle ?? "") == prevFrontTitle })
             ?? tiles.firstIndex(where: { $0.ownerPID == prevFrontPID }) {
             selectedIndex = i
             updateSelection()
@@ -267,7 +361,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             t.layer.isHidden = showIgnored ? false : isIgnored
             t.layer.opacity = (showIgnored && isIgnored) ? 0.3 : 1.0
             t.setNumber(nil)
-            t.tintColorName = paneColors[CGWindowID(t.scWindow.windowID)]
+            t.tintColorName = paneColors[t.windowID]
         }
         tiles = displayed
         for (i, t) in tiles.enumerated() {
@@ -283,7 +377,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
     private func tagSelectedColor(_ name: String?) {
         guard tiles.indices.contains(selectedIndex) else { return }
-        let id = CGWindowID(tiles[selectedIndex].scWindow.windowID)
+        let id = tiles[selectedIndex].windowID
         if let name { paneColors[id] = name } else { paneColors.removeValue(forKey: id) }
         tiles[selectedIndex].tintColorName = name
     }
@@ -347,7 +441,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard tiles.indices.contains(selectedIndex) else { return }
         let tile = tiles[selectedIndex]
         let pid = tile.ownerPID
-        let windowID = CGWindowID(tile.scWindow.windowID)
+        let windowID = tile.windowID
         pressCloseButton(pid: pid, windowID: windowID)
 
         let removed = tile
@@ -356,7 +450,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         removed.layer.removeFromSuperlayer()
         Task { await removed.stop() }
 
-        savedOrder = allTiles.map { CGWindowID($0.scWindow.windowID) }
+        savedOrder = allTiles.map { $0.windowID }
         if !tiles.indices.contains(selectedIndex) {
             selectedIndex = max(0, tiles.count - 1)
         }
@@ -405,6 +499,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     private func hide(activatePrevious: Bool = true) {
         let toStop = allTiles
         stopActivityTimer()
+        stopKeyEventTap()
         window?.orderOut(nil)
         visible = false
         if activatePrevious, prevFrontPID != 0,
@@ -438,12 +533,34 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     }
 
     private func layoutTiles(in bounds: NSRect) {
+        if config.minimalMode {
+            let target: CGFloat = 58
+            let gap: CGFloat = 10
+            let cols = min(max(1, tiles.count), max(1, Int((bounds.width - 48 + gap) / (target + gap))))
+            let rows = Int(ceil(Double(tiles.count) / Double(cols)))
+            let totalWidth = CGFloat(cols) * target + CGFloat(max(0, cols - 1)) * gap
+            let totalHeight = CGFloat(rows) * target + CGFloat(max(0, rows - 1)) * gap
+            let startX = bounds.midX - totalWidth / 2
+            let startY = bounds.midY - totalHeight / 2
+            gridCols = cols
+            for (i, tile) in tiles.enumerated() {
+                let col = i % cols
+                let row = i / cols
+                tile.setFrame(CGRect(
+                    x: startX + CGFloat(col) * (target + gap),
+                    y: startY + CGFloat(rows - row - 1) * (target + gap),
+                    width: target,
+                    height: target
+                ))
+            }
+            return
+        }
         let screenSize = activeScreen?.frame.size ?? NSScreen.main?.frame.size ?? bounds.size
         let ar = screenSize.width / max(1, screenSize.height)
         let (rects, cols) = GridLayout.frames(count: tiles.count, bounds: bounds, aspectRatio: ar)
         gridCols = cols
         for (tile, cell) in zip(tiles, rects) {
-            let src = tile.scWindow.frame
+            let src = tile.sourceFrame
             let srcAR = src.width / max(1, src.height)
             let cellAR = cell.width / max(1, cell.height)
             let fitted: CGRect
@@ -484,8 +601,8 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard tiles.indices.contains(selectedIndex), !isPicking else { return }
         let tile = tiles[selectedIndex]
         let pid = tile.ownerPID
-        let windowID = CGWindowID(tile.scWindow.windowID)
-        let title = tile.scWindow.title
+        let windowID = tile.windowID
+        let title = tile.sourceTitle
         prevFrontPID = 0
         isPicking = true
 
@@ -501,6 +618,21 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             return
         }
 
+        if config.minimalMode {
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.08)
+            CATransaction.setAnimationTimingFunction(Self.smoothEasing)
+            w.alphaValue = 0
+            CATransaction.commit()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self else { return }
+                w.alphaValue = 1
+                self.hide(activatePrevious: false)
+                self.isPicking = false
+            }
+            return
+        }
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         tile.highlight = .none
@@ -513,7 +645,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         CATransaction.setAnimationTimingFunction(Self.smoothEasing)
         tile.setFrame(bounds)
         CATransaction.commit()
-        _ = w
+        _ = bounds
 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.pickDuration) { [weak self] in
             guard let self else { return }
@@ -604,7 +736,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         if state.moved {
             if let target = tiles.firstIndex(where: { $0 !== tile && $0.layer.frame.contains(point) }) {
                 tiles.swapAt(state.index, target)
-                savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
+                savedOrder = tiles.map { $0.windowID }
                 selectedIndex = target
                 renumberTiles()
             }
@@ -627,7 +759,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         let target = newRow * cols + newCol
         guard target >= 0, target < tiles.count, target != selectedIndex else { return }
         tiles.swapAt(selectedIndex, target)
-        savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
+        savedOrder = tiles.map { $0.windowID }
         selectedIndex = target
         renumberTiles()
         layoutTilesAnimated()
@@ -651,9 +783,10 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     private func beginZoom() {
         guard !isZoomed, tiles.indices.contains(selectedIndex) else { return }
         let bounds = window?.contentView?.bounds ?? .zero
-        let pad: CGFloat = 4
-        let avail = bounds.insetBy(dx: pad, dy: pad)
-        let src = tiles[selectedIndex].scWindow.frame
+        let thumbHeight = min(max(bounds.height * 0.12, 64), 110)
+        let pad: CGFloat = 18
+        let avail = bounds.insetBy(dx: pad, dy: pad).insetBy(dx: 0, dy: thumbHeight * 0.45)
+        let src = tiles[selectedIndex].sourceFrame
         let srcAR = src.width / max(1, src.height)
         let availAR = avail.width / max(1, avail.height)
         let target: CGRect
@@ -667,14 +800,26 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         savedFrames = tiles.map { $0.layer.frame }
         isZoomed = true
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.12)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+        CATransaction.setAnimationDuration(0.16)
+        CATransaction.setAnimationTimingFunction(Self.smoothEasing)
+        let others = tiles.enumerated().filter { $0.offset != selectedIndex }
+        let thumbWidth = min(150, max(70, (bounds.width - pad * 2) / CGFloat(max(1, others.count))))
+        let totalWidth = thumbWidth * CGFloat(others.count)
+        var x = bounds.midX - totalWidth / 2
         for (i, t) in tiles.enumerated() {
             if i == selectedIndex {
-                t.layer.zPosition = 1
+                t.layer.zPosition = 10
+                t.layer.opacity = 1
                 t.setFrame(target)
             } else {
-                t.layer.opacity = 0
+                t.layer.zPosition = 0
+                t.layer.opacity = 0.38
+                let original = savedFrames.indices.contains(i) ? savedFrames[i] : t.layer.frame
+                let ar = original.width / max(1, original.height)
+                let w = min(thumbWidth - 8, thumbHeight * ar)
+                let frame = CGRect(x: x + (thumbWidth - w) / 2, y: pad, width: w, height: thumbHeight)
+                t.setFrame(frame)
+                x += thumbWidth
             }
         }
         CATransaction.commit()
@@ -684,8 +829,8 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard isZoomed else { return }
         isZoomed = false
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.12)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+        CATransaction.setAnimationDuration(0.16)
+        CATransaction.setAnimationTimingFunction(Self.smoothEasing)
         for (i, t) in tiles.enumerated() {
             if i < savedFrames.count { t.setFrame(savedFrames[i]) }
             t.layer.zPosition = 0
@@ -710,6 +855,13 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         return true
     }
 
+    private static func isCapturableMinimal(_ w: SpaceWindow) -> Bool {
+        if w.ownerPID == getpid() { return false }
+        if systemOwners.contains(w.ownerName) { return false }
+        if w.bounds.width < 200 || w.bounds.height < 200 { return false }
+        return true
+    }
+
     private func makeWindow(frame: NSRect) -> NSWindow {
         let w = OverlayWindow(
             contentRect: frame,
@@ -717,12 +869,17 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             backing: .buffered,
             defer: false
         )
-        w.level = .floating
+        w.level = .screenSaver
         w.isOpaque = false
-        w.backgroundColor = NSColor.black.withAlphaComponent(0.85)
+        w.backgroundColor = .clear
         w.isOpaque = false
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let v = OverlayView(frame: frame)
+        let container = NSView(frame: frame)
+        container.autoresizingMask = [.width, .height]
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.black.withAlphaComponent(config.minimalMode ? 0.08 : 0.18).cgColor
+        let v = OverlayView(frame: container.bounds)
+        v.autoresizingMask = [.width, .height]
         v.wantsLayer = true
         v.layer?.backgroundColor = .clear
         v.keymap = Keymap(overrides: config.bindings)
@@ -732,7 +889,8 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         v.onMouseDown = { [weak self] p in self?.mouseDownAt(p) }
         v.onMouseDragged = { [weak self] p in self?.mouseDraggedAt(p) }
         v.onMouseUp = { [weak self] p in self?.mouseUpAt(p) }
-        w.contentView = v
+        container.addSubview(v)
+        w.contentView = container
         view = v
         return w
     }

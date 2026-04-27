@@ -17,28 +17,40 @@ final class OverlayView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
-    override func keyDown(with event: NSEvent) {
+    @discardableResult
+    func handleKeyDown(_ event: NSEvent) -> Bool {
         let bareMods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         if event.keyCode == 49 && bareMods.isEmpty {
-            if event.isARepeat { return }
+            if event.isARepeat { return true }
             momentaryPeek = true
             onSpaceDown?()
-            return
+            return true
         }
         if let action = keymap.action(for: event) {
             onAction?(action)
-            return
+            return true
         }
+        return false
     }
 
-    override func keyUp(with event: NSEvent) {
+    @discardableResult
+    func handleKeyUp(_ event: NSEvent) -> Bool {
         if event.keyCode == 49 {
             if momentaryPeek {
                 momentaryPeek = false
                 onSpaceUp?()
             }
-            return
+            return true
         }
+        return false
+    }
+
+    override func keyDown(with event: NSEvent) {
+        _ = handleKeyDown(event)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        _ = handleKeyUp(event)
     }
 
     func resetMomentaryPeek() {
