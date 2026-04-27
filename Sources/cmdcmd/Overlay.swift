@@ -58,10 +58,12 @@ final class Overlay {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self, self.visible else { return }
+            guard let self, self.visible, !self.isPicking else { return }
             self.hide(activatePrevious: false)
         }
     }
+
+    private var isPicking = false
 
     deinit {
         if let o = workspaceObserver {
@@ -72,7 +74,7 @@ final class Overlay {
     func toggle() {
         if visible {
             if NSApp.isActive {
-                hide()
+                dismiss()
             } else {
                 NSApp.activate(ignoringOtherApps: true)
                 window?.makeKeyAndOrderFront(nil)
@@ -80,6 +82,15 @@ final class Overlay {
             }
         } else {
             show()
+        }
+    }
+
+    private func dismiss() {
+        guard visible, !isPicking else { return }
+        if tiles.indices.contains(selectedIndex) {
+            pick()
+        } else {
+            hide()
         }
     }
 
@@ -159,14 +170,48 @@ final class Overlay {
             let w = window ?? makeWindow(frame: frames.visible)
             window = w
             w.setFrame(frames.visible, display: false)
+            w.alphaValue = 1
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             if let v = view { w.makeFirstResponder(v) }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             installTiles(candidates: candidates)
+            CATransaction.commit()
+            animateShowFromFocused(in: w)
         }
     }
 
-    private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> Bool {
+    private static let smoothEasing = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
+    private static let pickDuration: Double = 0.16
+
+    private func animateShowFromFocused(in w: NSWindow) {
+        guard tiles.indices.contains(selectedIndex),
+              let bounds = w.contentView?.bounds, bounds.width > 0 else { return }
+        let tile = tiles[selectedIndex]
+        let gridFrame = tile.layer.frame
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tile.highlight = .none
+        tile.layer.zPosition = 1
+        tile.setFrame(bounds)
+        CATransaction.commit()
+        CATransaction.flush()
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(Self.pickDuration)
+        CATransaction.setAnimationTimingFunction(Self.smoothEasing)
+        tile.setFrame(gridFrame)
+        CATransaction.commit()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pickDuration) { [weak self, weak tile] in
+            tile?.layer.zPosition = 0
+            self?.updateSelection()
+        }
+    }
+
+private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> Bool {
         let inter = window.frame.intersection(displayBounds)
         guard !inter.isNull else { return false }
         let interArea = inter.width * inter.height
@@ -358,18 +403,45 @@ final class Overlay {
     }
 
     private func pick() {
-        guard tiles.indices.contains(selectedIndex) else { return }
+        guard tiles.indices.contains(selectedIndex), !isPicking else { return }
         let tile = tiles[selectedIndex]
         let pid = tile.ownerPID
         let windowID = CGWindowID(tile.scWindow.windowID)
         let title = tile.scWindow.title
         prevFrontPID = 0
-        hide()
+        isPicking = true
+
         raiseAXWindow(pid: pid, windowID: windowID, title: title)
         if let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
         }
         raiseAXWindow(pid: pid, windowID: windowID, title: title)
+
+        guard let w = window, let bounds = w.contentView?.bounds else {
+            isPicking = false
+            hide(activatePrevious: false)
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tile.highlight = .none
+        tile.layer.zPosition = 1
+        CATransaction.commit()
+        CATransaction.flush()
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(Self.pickDuration)
+        CATransaction.setAnimationTimingFunction(Self.smoothEasing)
+        tile.setFrame(bounds)
+        CATransaction.commit()
+        _ = w
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pickDuration) { [weak self] in
+            guard let self else { return }
+            self.hide(activatePrevious: false)
+            self.isPicking = false
+        }
     }
 
     private func raiseAXWindow(pid: pid_t, windowID: CGWindowID, title: String?) {
@@ -577,7 +649,7 @@ final class Overlay {
         v.layer?.backgroundColor = .clear
         v.onEscape = { [weak self] in
             guard let self else { return }
-            if self.showIgnored { self.toggleShowIgnored() } else { self.hide() }
+            if self.showIgnored { self.toggleShowIgnored() } else { self.dismiss() }
         }
         v.onArrow = { [weak self] dx, dy in self?.move(dx: dx, dy: dy) }
         v.onEnter = { [weak self] in self?.pick() }
