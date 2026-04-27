@@ -17,19 +17,51 @@ if let i = args.firstIndex(of: "--render-iconset"), i + 1 < args.count {
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 app.applicationIconImage = AppIcon.makePlaceholder()
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Open Config…", action: #selector(openConfig), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc func openConfig() {
+        do {
+            let url = try Config.ensureExists()
+            NSWorkspace.shared.open(url)
+        } catch {
+            Log.write("openConfig failed: \(error)")
+        }
+    }
+}
+
+let appDelegate = AppDelegate()
+app.delegate = appDelegate
 app.finishLaunching()
 
+let appConfig = Config.load()
 let tracker = SpaceTracker()
-let overlay = Overlay(tracker: tracker)
-var chord: CmdChord?
+let overlay = Overlay(tracker: tracker, config: appConfig)
+var trigger: AnyObject?
 
 func startApp() {
     Task {
         _ = try? await SCShareableContent.current
     }
-    chord = CmdChord {
+    let fire = {
         overlay.toggle()
         dumpState(tracker: tracker)
+    }
+    if appConfig.triggerSpec.lowercased() == "cmd-cmd" {
+        trigger = CmdChord(handler: fire)
+    } else if let monitor = HotkeyMonitor(spec: appConfig.triggerSpec, handler: fire) {
+        trigger = monitor
+        Log.write("trigger = \(appConfig.triggerSpec)")
+    } else {
+        Log.write("trigger spec '\(appConfig.triggerSpec)' invalid; falling back to cmd-cmd")
+        trigger = CmdChord(handler: fire)
     }
     dumpState(tracker: tracker)
 }

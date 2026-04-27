@@ -19,6 +19,7 @@ final class Overlay {
     private var showIgnored: Bool = false
     private var dragState: DragState?
     private let tracker: SpaceTracker
+    private let config: Config
 
     private var displayKey: String = "main"
     private var activeScreen: NSScreen?
@@ -51,8 +52,9 @@ final class Overlay {
     private var activityTimer: Timer?
     private let hint = HintPill()
 
-    init(tracker: SpaceTracker) {
+    init(tracker: SpaceTracker, config: Config) {
         self.tracker = tracker
+        self.config = config
         workspaceObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: nil,
@@ -188,6 +190,7 @@ final class Overlay {
     private func animateShowFromFocused(in w: NSWindow) {
         guard tiles.indices.contains(selectedIndex),
               let bounds = w.contentView?.bounds, bounds.width > 0 else { return }
+        guard config.animations else { return }
         let tile = tiles[selectedIndex]
         let gridFrame = tile.layer.frame
 
@@ -305,6 +308,81 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         updateHint()
     }
 
+    private func dispatch(_ action: Action) {
+        switch action {
+        case .pick: pick()
+        case .dismiss:
+            if showIgnored { toggleShowIgnored() } else { dismiss() }
+        case .moveLeft:  move(dx: -1, dy: 0)
+        case .moveRight: move(dx: 1, dy: 0)
+        case .moveUp:    move(dx: 0, dy: -1)
+        case .moveDown:  move(dx: 0, dy: 1)
+        case .swapLeft:  swapSelected(dx: -1, dy: 0)
+        case .swapRight: swapSelected(dx: 1, dy: 0)
+        case .swapUp:    swapSelected(dx: 0, dy: -1)
+        case .swapDown:  swapSelected(dx: 0, dy: 1)
+        case .ignore: toggleIgnoreSelected()
+        case .toggleHidden: toggleShowIgnored()
+        case .close: closeSelected()
+        case .tagGreen:  tagSelectedColor("green")
+        case .tagBlue:   tagSelectedColor("blue")
+        case .tagRed:    tagSelectedColor("red")
+        case .tagYellow: tagSelectedColor("yellow")
+        case .tagOrange: tagSelectedColor("orange")
+        case .tagPurple: tagSelectedColor("purple")
+        case .tagClear:  tagSelectedColor(nil)
+        case .pick1: pickIndex(0)
+        case .pick2: pickIndex(1)
+        case .pick3: pickIndex(2)
+        case .pick4: pickIndex(3)
+        case .pick5: pickIndex(4)
+        case .pick6: pickIndex(5)
+        case .pick7: pickIndex(6)
+        case .pick8: pickIndex(7)
+        case .pick9: pickIndex(8)
+        }
+    }
+
+    private func closeSelected() {
+        guard tiles.indices.contains(selectedIndex) else { return }
+        let tile = tiles[selectedIndex]
+        let pid = tile.ownerPID
+        let windowID = CGWindowID(tile.scWindow.windowID)
+        pressCloseButton(pid: pid, windowID: windowID)
+
+        let removed = tile
+        tiles.remove(at: selectedIndex)
+        allTiles.removeAll { $0 === removed }
+        removed.layer.removeFromSuperlayer()
+        Task { await removed.stop() }
+
+        savedOrder = allTiles.map { CGWindowID($0.scWindow.windowID) }
+        if !tiles.indices.contains(selectedIndex) {
+            selectedIndex = max(0, tiles.count - 1)
+        }
+        renumberTiles()
+        layoutTilesAnimated()
+        updateSelection()
+    }
+
+    private func pressCloseButton(pid: pid_t, windowID: CGWindowID) {
+        let app = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return }
+        for win in windows {
+            var wid: CGWindowID = 0
+            if _AXUIElementGetWindow(win, &wid) == .success, wid == windowID {
+                var btnRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(win, kAXCloseButtonAttribute as CFString, &btnRef) == .success,
+                   let btn = btnRef, CFGetTypeID(btn) == AXUIElementGetTypeID() {
+                    AXUIElementPerformAction(btn as! AXUIElement, kAXPressAction as CFString)
+                }
+                return
+            }
+        }
+    }
+
     private func updateHint() {
         guard let win = window, let root = win.contentView?.layer else { return }
         if showIgnored {
@@ -417,9 +495,9 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         }
         raiseAXWindow(pid: pid, windowID: windowID, title: title)
 
-        guard let w = window, let bounds = w.contentView?.bounds else {
-            isPicking = false
+        guard let w = window, let bounds = w.contentView?.bounds, config.animations else {
             hide(activatePrevious: false)
+            isPicking = false
             return
         }
 
@@ -647,22 +725,13 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         let v = OverlayView(frame: frame)
         v.wantsLayer = true
         v.layer?.backgroundColor = .clear
-        v.onEscape = { [weak self] in
-            guard let self else { return }
-            if self.showIgnored { self.toggleShowIgnored() } else { self.dismiss() }
-        }
-        v.onArrow = { [weak self] dx, dy in self?.move(dx: dx, dy: dy) }
-        v.onEnter = { [weak self] in self?.pick() }
+        v.keymap = Keymap(overrides: config.bindings)
+        v.onAction = { [weak self] action in self?.dispatch(action) }
         v.onSpaceDown = { [weak self] in self?.beginZoom() }
         v.onSpaceUp = { [weak self] in self?.endZoom() }
         v.onMouseDown = { [weak self] p in self?.mouseDownAt(p) }
         v.onMouseDragged = { [weak self] p in self?.mouseDraggedAt(p) }
         v.onMouseUp = { [weak self] p in self?.mouseUpAt(p) }
-        v.onDigit = { [weak self] n in self?.pickIndex(n - 1) }
-        v.onSwap = { [weak self] dx, dy in self?.swapSelected(dx: dx, dy: dy) }
-        v.onIgnore = { [weak self] in self?.toggleIgnoreSelected() }
-        v.onToggleIgnoredView = { [weak self] in self?.toggleShowIgnored() }
-        v.onTagColor = { [weak self] name in self?.tagSelectedColor(name) }
         w.contentView = v
         view = v
         return w
