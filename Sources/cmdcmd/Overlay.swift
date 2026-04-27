@@ -1,6 +1,9 @@
 import AppKit
 import ScreenCaptureKit
 
+@_silgen_name("_AXUIElementGetWindow")
+private func _AXUIElementGetWindow(_ axEl: AXUIElement, _ wid: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 final class Overlay {
     private var window: NSWindow?
     private var view: OverlayView?
@@ -238,6 +241,16 @@ final class Overlay {
         }
     }
 
+    func shutdown() {
+        let toStop = allTiles
+        allTiles = []
+        tiles = []
+        guard !toStop.isEmpty else { return }
+        let group = DispatchGroup()
+        for t in toStop { t.stopSync(group: group) }
+        _ = group.wait(timeout: .now() + 1.0)
+    }
+
     private func hide() {
         let toStop = allTiles
         stopActivityTimer()
@@ -278,8 +291,19 @@ final class Overlay {
         let ar = screenSize.width / max(1, screenSize.height)
         let (rects, cols) = GridLayout.frames(count: tiles.count, bounds: bounds, aspectRatio: ar)
         gridCols = cols
-        for (tile, rect) in zip(tiles, rects) {
-            tile.setFrame(rect)
+        for (tile, cell) in zip(tiles, rects) {
+            let src = tile.scWindow.frame
+            let srcAR = src.width / max(1, src.height)
+            let cellAR = cell.width / max(1, cell.height)
+            let fitted: CGRect
+            if srcAR > cellAR {
+                let h = cell.width / srcAR
+                fitted = CGRect(x: cell.minX, y: cell.midY - h / 2, width: cell.width, height: h)
+            } else {
+                let w = cell.height * srcAR
+                fitted = CGRect(x: cell.midX - w / 2, y: cell.minY, width: w, height: cell.height)
+            }
+            tile.setFrame(fitted)
         }
     }
 
@@ -309,28 +333,39 @@ final class Overlay {
         guard tiles.indices.contains(selectedIndex) else { return }
         let tile = tiles[selectedIndex]
         let pid = tile.ownerPID
+        let windowID = CGWindowID(tile.scWindow.windowID)
         let title = tile.scWindow.title
         prevFrontPID = 0
         hide()
+        raiseAXWindow(pid: pid, windowID: windowID, title: title)
         if let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
         }
-        if let title, !title.isEmpty {
-            raiseAXWindow(pid: pid, title: title)
-        }
+        raiseAXWindow(pid: pid, windowID: windowID, title: title)
     }
 
-    private func raiseAXWindow(pid: pid_t, title: String) {
+    private func raiseAXWindow(pid: pid_t, windowID: CGWindowID, title: String?) {
         let app = AXUIElementCreateApplication(pid)
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
               let windows = windowsRef as? [AXUIElement] else { return }
         for win in windows {
+            var wid: CGWindowID = 0
+            if _AXUIElementGetWindow(win, &wid) == .success, wid == windowID {
+                AXUIElementSetAttributeValue(app, kAXFocusedWindowAttribute as CFString, win)
+                AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
+                AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+                return
+            }
+        }
+        guard let title, !title.isEmpty else { return }
+        for win in windows {
             var titleRef: CFTypeRef?
             AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef)
             if let t = titleRef as? String, t == title {
-                AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+                AXUIElementSetAttributeValue(app, kAXFocusedWindowAttribute as CFString, win)
                 AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
+                AXUIElementPerformAction(win, kAXRaiseAction as CFString)
                 return
             }
         }

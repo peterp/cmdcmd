@@ -232,6 +232,14 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         try? await s.stopCapture()
     }
 
+    func stopSync(group: DispatchGroup) {
+        cancelled = true
+        guard let s = stream else { return }
+        self.stream = nil
+        group.enter()
+        s.stopCapture { _ in group.leave() }
+    }
+
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid,
               let pixelBuffer = sampleBuffer.imageBuffer,

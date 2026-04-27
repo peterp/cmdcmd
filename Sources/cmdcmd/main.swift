@@ -27,6 +27,14 @@ if !onboarding.showIfNeeded() {
     startApp()
 }
 
+NotificationCenter.default.addObserver(
+    forName: NSApplication.willTerminateNotification,
+    object: nil,
+    queue: .main
+) { _ in
+    overlay.shutdown()
+}
+
 func dumpState(tracker: SpaceTracker) {
     let spaces = tracker.spaces()
     let windows = tracker.windows()
