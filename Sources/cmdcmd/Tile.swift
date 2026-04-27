@@ -24,9 +24,11 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     let ignoreKey: String
     let layer: CALayer
     private let content: CALayer
-    private let numberLabel: CATextLayer
+    private let numberChip: CALayer
+    private let numberText: CATextLayer
+    private let titlePill: CALayer
+    private let titleText: CATextLayer
     private let idleDot: CALayer
-    private let tintBar: CALayer
     private var lastSignificantChangeAt: CFAbsoluteTime = 0
     private var stream: SCStream?
     private var cancelled = false
@@ -42,9 +44,11 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         let outer = CALayer()
         outer.masksToBounds = false
         outer.shadowOpacity = 0
+        outer.shadowRadius = 12
+        outer.shadowOffset = .zero
         outer.cornerRadius = 10
-        outer.borderColor = NSColor.black.withAlphaComponent(0.6).cgColor
-        outer.borderWidth = 1
+        outer.borderColor = NSColor.clear.cgColor
+        outer.borderWidth = 0
         let inner = CALayer()
         inner.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
         inner.cornerRadius = 9
@@ -62,29 +66,46 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         dot.opacity = 0
         inner.addSublayer(dot)
 
-        let bar = CALayer()
-        bar.isHidden = true
-        bar.cornerRadius = 2
-        outer.addSublayer(bar)
+        let chip = CALayer()
+        chip.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        chip.masksToBounds = true
+        chip.isHidden = true
+        inner.addSublayer(chip)
 
-        let label = CATextLayer()
-        label.alignmentMode = .center
-        label.truncationMode = .end
-        label.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
-        label.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
-        label.cornerRadius = 6
-        label.masksToBounds = true
-        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        label.fontSize = 12
-        label.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
-        label.string = ""
-        inner.addSublayer(label)
+        let chipText = CATextLayer()
+        chipText.alignmentMode = .center
+        chipText.foregroundColor = NSColor.white.cgColor
+        chipText.backgroundColor = NSColor.clear.cgColor
+        chipText.font = NSFont.systemFont(ofSize: 12, weight: .bold)
+        chipText.fontSize = 12
+        chipText.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        chipText.string = ""
+        chip.addSublayer(chipText)
+
+        let pill = CALayer()
+        pill.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        pill.masksToBounds = true
+        pill.isHidden = true
+        inner.addSublayer(pill)
+
+        let pillText = CATextLayer()
+        pillText.alignmentMode = .left
+        pillText.truncationMode = .end
+        pillText.foregroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        pillText.backgroundColor = NSColor.clear.cgColor
+        pillText.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        pillText.fontSize = 12
+        pillText.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        pillText.string = ""
+        pill.addSublayer(pillText)
 
         self.layer = outer
         self.content = inner
-        self.numberLabel = label
+        self.numberChip = chip
+        self.numberText = chipText
+        self.titlePill = pill
+        self.titleText = pillText
         self.idleDot = dot
-        self.tintBar = bar
         self.windowTitle = scWindow.title ?? ""
         super.init()
     }
@@ -97,12 +118,9 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if let name = tintColorName, let color = Tile.color(forName: name) {
-            tintBar.backgroundColor = color.withAlphaComponent(0.75).cgColor
-            tintBar.isHidden = false
-            idleDot.backgroundColor = color.withAlphaComponent(0.85).cgColor
+            numberChip.backgroundColor = color.cgColor
         } else {
-            tintBar.isHidden = true
-            idleDot.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+            numberChip.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
         }
         CATransaction.commit()
     }
@@ -117,68 +135,86 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func updateLabel() {
         let trimmed = windowTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch (currentNumber, trimmed.isEmpty) {
-        case (nil, true): numberLabel.string = ""
-        case (nil, false): numberLabel.string = trimmed
-        case (let n?, true): numberLabel.string = "\(n)"
-        case (let n?, false): numberLabel.string = "\(n) — \(trimmed)"
+        if let n = currentNumber {
+            numberText.string = "\(n)"
+            numberChip.isHidden = false
+        } else {
+            numberText.string = ""
+            numberChip.isHidden = true
         }
+        titleText.string = trimmed
+        titlePill.isHidden = trimmed.isEmpty
         layoutLabel()
     }
 
     func setFrame(_ rect: CGRect) {
         layer.frame = rect
         content.frame = CGRect(origin: .zero, size: rect.size).insetBy(dx: 1, dy: 1)
-        let cb = content.bounds
         layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerWidth: 10, cornerHeight: 10, transform: nil)
         layoutLabel()
-        let dotSize: CGFloat = 10
-        let inset: CGFloat = 8
-        idleDot.frame = CGRect(
-            x: cb.width - dotSize - inset,
-            y: cb.height - dotSize - inset,
-            width: dotSize,
-            height: dotSize
-        )
-        let barHeight: CGFloat = 4
-        let barGap: CGFloat = 4
-        let barInset: CGFloat = 8
-        tintBar.frame = CGRect(
-            x: barInset,
-            y: -barHeight - barGap,
-            width: rect.size.width - barInset * 2,
-            height: barHeight
-        )
     }
 
     private func layoutLabel() {
         let rect = content.bounds
         guard rect.width > 0 else { return }
-        let badgeHeight: CGFloat = 18
+        let badgeHeight: CGFloat = 22
         let inset: CGFloat = 8
+        let gap: CGFloat = 6
         let hPad: CGFloat = 8
-        let text = (numberLabel.string as? String) ?? ""
-        let maxWidth = max(22, rect.size.width - inset * 2)
-        let width: CGFloat
-        if text.isEmpty {
-            width = 0
-        } else {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: numberLabel.font as? NSFont ?? NSFont.systemFont(ofSize: 12, weight: .semibold)
-            ]
-            let textWidth = (text as NSString).size(withAttributes: attrs).width
-            width = min(maxWidth, ceil(textWidth) + hPad * 2)
-        }
-        numberLabel.isHidden = text.isEmpty
-        numberLabel.frame = CGRect(
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let lineHeight = ceil(font.ascender - font.descender)
+        let textY = (badgeHeight - lineHeight) / 2
+
+        let chipHidden = numberChip.isHidden
+        let chipFrame = CGRect(
             x: inset,
             y: rect.size.height - badgeHeight - inset,
-            width: width,
+            width: chipHidden ? 0 : badgeHeight,
             height: badgeHeight
+        )
+        if !chipHidden {
+            numberChip.frame = chipFrame
+            numberChip.cornerRadius = badgeHeight / 2
+            numberText.frame = CGRect(
+                x: 0,
+                y: textY,
+                width: chipFrame.width,
+                height: lineHeight
+            )
+        }
+
+        let pillX = inset + (chipHidden ? 0 : chipFrame.width + gap)
+        let text = (titleText.string as? String) ?? ""
+        if !text.isEmpty {
+            let attrs: [NSAttributedString.Key: Any] = [.font: font]
+            let textWidth = (text as NSString).size(withAttributes: attrs).width
+            let avail = max(0, rect.size.width - pillX - inset)
+            let pillWidth = min(avail, ceil(textWidth) + hPad * 2)
+            titlePill.frame = CGRect(
+                x: pillX,
+                y: chipFrame.minY,
+                width: pillWidth,
+                height: badgeHeight
+            )
+            titlePill.cornerRadius = badgeHeight / 2
+            titleText.frame = CGRect(
+                x: hPad,
+                y: textY,
+                width: max(0, pillWidth - hPad * 2),
+                height: lineHeight
+            )
+        }
+
+        let dotSize: CGFloat = 10
+        idleDot.frame = CGRect(
+            x: rect.size.width - dotSize - inset,
+            y: chipFrame.midY - dotSize / 2,
+            width: dotSize,
+            height: dotSize
         )
     }
 
-    enum Highlight {
+    enum Highlight: Equatable {
         case none, subtle
     }
 
@@ -187,14 +223,24 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func applyHighlight() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         switch highlight {
         case .none:
             content.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
             content.borderWidth = 1
+            layer.borderColor = NSColor.clear.cgColor
+            layer.borderWidth = 0
+            layer.shadowOpacity = 0
         case .subtle:
-            content.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.5).cgColor
-            content.borderWidth = 2
+            content.borderColor = NSColor.clear.cgColor
+            content.borderWidth = 0
+            layer.borderColor = NSColor.controlAccentColor.cgColor
+            layer.borderWidth = 3
+            layer.shadowColor = NSColor.controlAccentColor.cgColor
+            layer.shadowOpacity = 0.6
         }
+        CATransaction.commit()
     }
 
     func start() async {

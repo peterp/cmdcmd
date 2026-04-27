@@ -20,9 +20,12 @@ final class Overlay {
     private var dragState: DragState?
     private let tracker: SpaceTracker
 
+    private var displayKey: String = "main"
+    private var activeScreen: NSScreen?
+
     private var ignoredKeys: Set<String> {
-        get { Set((UserDefaults.standard.array(forKey: "ignoredWindows") as? [String]) ?? []) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: "ignoredWindows") }
+        get { Set((UserDefaults.standard.array(forKey: "ignoredWindows.\(displayKey)") as? [String]) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "ignoredWindows.\(displayKey)") }
     }
 
     private var paneColors: [CGWindowID: String] = [:]
@@ -36,11 +39,11 @@ final class Overlay {
 
     private var savedOrder: [CGWindowID] {
         get {
-            (UserDefaults.standard.array(forKey: "tileOrder") as? [NSNumber] ?? [])
+            (UserDefaults.standard.array(forKey: "tileOrder.\(displayKey)") as? [NSNumber] ?? [])
                 .map { $0.uint32Value }
         }
         set {
-            UserDefaults.standard.set(newValue.map { NSNumber(value: $0) }, forKey: "tileOrder")
+            UserDefaults.standard.set(newValue.map { NSNumber(value: $0) }, forKey: "tileOrder.\(displayKey)")
         }
     }
 
@@ -92,9 +95,31 @@ final class Overlay {
     private func show() {
         prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         prevFrontTitle = focusedWindowTitle(pid: prevFrontPID) ?? ""
+        let screen = Self.cursorScreen()
+        activeScreen = screen
+        displayKey = Self.displayKeyString(for: screen)
         visible = true
         startActivityTimer()
         Task { await prepareAndShow() }
+    }
+
+    private static func cursorScreen() -> NSScreen {
+        let p = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { $0.frame.contains(p) }) ?? NSScreen.main ?? NSScreen.screens.first!
+    }
+
+    private static func displayID(for screen: NSScreen) -> CGDirectDisplayID {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return (screen.deviceDescription[key] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+    }
+
+    private static func displayKeyString(for screen: NSScreen) -> String {
+        let id = displayID(for: screen)
+        if let uuidRef = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue(),
+           let cf = CFUUIDCreateString(nil, uuidRef) as String? {
+            return cf
+        }
+        return "id-\(id)"
     }
 
     private func startActivityTimer() {
@@ -131,19 +156,31 @@ final class Overlay {
             Log.write("SCShareableContent failed: \(error)")
             scContent = nil
         }
-        let candidates = (scContent?.windows ?? []).filter(Self.isCapturable)
+        let allCandidates = (scContent?.windows ?? []).filter(Self.isCapturable)
+        let frames: (display: CGRect, visible: CGRect) = await MainActor.run {
+            let s = self.activeScreen ?? Self.cursorScreen()
+            return (CGDisplayBounds(Self.displayID(for: s)), s.visibleFrame)
+        }
+        let candidates = allCandidates.filter { Self.windowMostlyOn(displayBounds: frames.display, window: $0) }
 
         await MainActor.run {
             guard visible else { return }
-            let screenFrame = NSScreen.main?.visibleFrame ?? .zero
-            let w = window ?? makeWindow(frame: screenFrame)
+            let w = window ?? makeWindow(frame: frames.visible)
             window = w
-            w.setFrame(screenFrame, display: false)
+            w.setFrame(frames.visible, display: false)
             w.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             if let v = view { w.makeFirstResponder(v) }
             installTiles(candidates: candidates)
         }
+    }
+
+    private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> Bool {
+        let inter = window.frame.intersection(displayBounds)
+        guard !inter.isNull else { return false }
+        let interArea = inter.width * inter.height
+        let total = window.frame.width * window.frame.height
+        return total > 0 && interArea / total >= 0.5
     }
 
     private func installTiles(candidates: [SCWindow]) {
@@ -287,7 +324,7 @@ final class Overlay {
     }
 
     private func layoutTiles(in bounds: NSRect) {
-        let screenSize = NSScreen.main?.frame.size ?? bounds.size
+        let screenSize = activeScreen?.frame.size ?? NSScreen.main?.frame.size ?? bounds.size
         let ar = screenSize.width / max(1, screenSize.height)
         let (rects, cols) = GridLayout.frames(count: tiles.count, bounds: bounds, aspectRatio: ar)
         gridCols = cols
