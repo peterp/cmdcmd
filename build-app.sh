@@ -12,11 +12,13 @@ swift build -c "$CONFIG"
 
 BIN=".build/$CONFIG/$BIN_NAME"
 test -f "$BIN" || { echo "missing $BIN"; exit 1; }
+test -f Resources/AppIcon.icns || { echo "missing Resources/AppIcon.icns — run ./make-icon.sh"; exit 1; }
 
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS"
 mkdir -p "$BUNDLE/Contents/Resources"
 cp Resources/Info.plist "$BUNDLE/Contents/Info.plist"
+cp Resources/AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
 cp "$BIN" "$BUNDLE/Contents/MacOS/$BIN_NAME"
 
 codesign --force --sign - \
