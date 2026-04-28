@@ -107,7 +107,7 @@ private struct SettingsRootView: View {
             Toggle(isOn: $model.letterJump) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("First-letter app jump").font(.system(size: 13, weight: .medium))
-                    Text("Press an app's first letter to select it; repeat to cycle matches.")
+                    Text("Hold ⌃ (Control) + an app's first letter to select it; repeat to cycle matches.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

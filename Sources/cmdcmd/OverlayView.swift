@@ -26,17 +26,17 @@ final class OverlayView: NSView {
             onSpaceDown?()
             return
         }
-        if let action = keymap.action(for: event) {
-            onAction?(action)
-            return
-        }
-        if bareMods.isEmpty,
+        if bareMods == [.control],
            let onLetter,
            let chars = event.charactersIgnoringModifiers?.lowercased(),
            chars.count == 1,
            let scalar = chars.unicodeScalars.first,
            CharacterSet.lowercaseLetters.contains(scalar) {
             onLetter(chars)
+            return
+        }
+        if let action = keymap.action(for: event) {
+            onAction?(action)
             return
         }
     }
