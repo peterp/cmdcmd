@@ -17,4 +17,10 @@ enum Log {
         FileHandle.standardOutput.write(Data(line.utf8))
         if let data = line.data(using: .utf8) { handle?.write(data) }
     }
+
+    static func debug(_ msg: @autoclosure () -> String) {
+        #if DEBUG
+        write(msg())
+        #endif
+    }
 }

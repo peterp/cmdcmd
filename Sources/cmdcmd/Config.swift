@@ -4,10 +4,12 @@ struct Config: Codable {
     var animations: Bool
     var trigger: String?
     var bindings: [String: Action]
+    var livePreviews: Bool?
 
     var triggerSpec: String { trigger ?? "cmd-cmd" }
+    var livePreviewsEnabled: Bool { livePreviews ?? true }
 
-    static let `default` = Config(animations: true, trigger: nil, bindings: [:])
+    static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil)
 
     static var fileURL: URL {
         URL(fileURLWithPath: NSHomeDirectory())
@@ -118,6 +120,10 @@ struct Config: Codable {
         lines.append("{")
         lines.append("  // Animate the show / pick zoom transitions. Set to false for instant.")
         lines.append("  \"animations\": true,")
+        lines.append("")
+        lines.append("  // Live tile previews. Set to false for static screenshots only —")
+        lines.append("  // faster and lighter, especially with many windows open.")
+        lines.append("  \"livePreviews\": true,")
         lines.append("")
         lines.append("  // What summons the overlay. \"cmd-cmd\" is the both-Command-keys chord.")
         lines.append("  // Anything else is a normal hotkey: \"cmd+shift+space\", \"f13\", etc.")

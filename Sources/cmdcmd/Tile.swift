@@ -1,11 +1,39 @@
 import AppKit
 import ScreenCaptureKit
+import CoreImage
 import CoreMedia
 import CoreVideo
 
 
 final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     static let colorNames = ["green", "blue", "red", "yellow", "orange", "purple"]
+
+    private static let cacheLock = NSLock()
+    private static var frameCache: [CGWindowID: CGImage] = [:]
+    private static var frameCacheOrder: [CGWindowID] = []
+    private static let frameCacheLimit = 100
+    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    private static let cacheQueue = DispatchQueue(label: "cmdcmd.tile.cache", qos: .utility)
+
+    static func cachedFrame(for id: CGWindowID) -> CGImage? {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        return frameCache[id]
+    }
+
+    static func setCachedFrame(_ image: CGImage, for id: CGWindowID) {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if frameCache[id] == nil {
+            frameCacheOrder.append(id)
+        } else {
+            frameCacheOrder.removeAll { $0 == id }
+            frameCacheOrder.append(id)
+        }
+        frameCache[id] = image
+        while frameCacheOrder.count > frameCacheLimit {
+            let evict = frameCacheOrder.removeFirst()
+            frameCache.removeValue(forKey: evict)
+        }
+    }
 
     static func color(forName name: String) -> NSColor? {
         switch name {
@@ -40,6 +68,10 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var isIdle: Bool = false
     private var stream: SCStream?
     private var cancelled = false
+    private var hasRenderedFrame = false
+    private var hasRenderedLiveFrame = false
+    private var lastPixelBuffer: CVPixelBuffer?
+    var suppressFrames = false
     private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInteractive)
 
     init(scWindow: SCWindow, ownerPID: pid_t) {
@@ -116,6 +148,14 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         self.idleDot = dot
         self.windowTitle = scWindow.title ?? ""
         super.init()
+
+        if let cached = Tile.cachedFrame(for: CGWindowID(scWindow.windowID)) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            inner.contents = cached
+            CATransaction.commit()
+            self.hasRenderedFrame = true
+        }
     }
 
     var tintColorName: String? {
@@ -158,8 +198,11 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     func setFrame(_ rect: CGRect) {
         layer.frame = rect
         content.frame = CGRect(origin: .zero, size: rect.size).insetBy(dx: 1, dy: 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerWidth: 10, cornerHeight: 10, transform: nil)
         layoutLabel()
+        CATransaction.commit()
     }
 
     private func layoutLabel() {
@@ -252,19 +295,57 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         CATransaction.commit()
     }
 
-    func start() async {
-        if cancelled { return }
-        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+    private static let thumbMaxDim: CGFloat = 800
+
+    private func captureConfig(maxDim: CGFloat? = nil) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        config.width = max(64, Int(scWindow.frame.width * scale))
-        config.height = max(64, Int(scWindow.frame.height * scale))
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        var w = scWindow.frame.width * scale
+        var h = scWindow.frame.height * scale
+        if let m = maxDim {
+            let largest = max(w, h)
+            if largest > m {
+                let factor = m / largest
+                w *= factor
+                h *= factor
+            }
+        }
+        config.width = max(64, Int(w))
+        config.height = max(64, Int(h))
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = false
         config.scalesToFit = true
-        config.queueDepth = 5
         config.ignoreShadowsSingleWindow = true
+        return config
+    }
+
+    func snapshot() async {
+        if cancelled || hasRenderedFrame || hasRenderedLiveFrame { return }
+        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+        let config = captureConfig(maxDim: Tile.thumbMaxDim)
+        do {
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            if cancelled || hasRenderedLiveFrame { return }
+            Tile.setCachedFrame(image, for: CGWindowID(scWindow.windowID))
+            await MainActor.run {
+                guard !self.hasRenderedLiveFrame else { return }
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.content.contents = image
+                CATransaction.commit()
+                self.hasRenderedFrame = true
+            }
+        } catch {
+            Log.write("tile snapshot failed wid=\(scWindow.windowID): \(error)")
+        }
+    }
+
+    func start() async {
+        if cancelled { return }
+        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+        let config = captureConfig()
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        config.queueDepth = 3
 
         do {
             let s = SCStream(filter: filter, configuration: config, delegate: self)
@@ -280,8 +361,33 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    private func cacheLastFrameDeferred() {
+        let id = CGWindowID(self.scWindow.windowID)
+        let q = self.queue
+        Tile.cacheQueue.async {
+            var pb: CVPixelBuffer?
+            q.sync {
+                pb = self.lastPixelBuffer
+                self.lastPixelBuffer = nil
+            }
+            guard let pb else { return }
+            let ci = CIImage(cvPixelBuffer: pb)
+            let extent = ci.extent
+            let largest = max(extent.width, extent.height)
+            let factor = largest > Tile.thumbMaxDim ? Tile.thumbMaxDim / largest : 1
+            let scaled = factor < 1
+                ? ci.transformed(by: CGAffineTransform(scaleX: factor, y: factor))
+                : ci
+            if let cg = Tile.ciContext.createCGImage(scaled, from: scaled.extent) {
+                Tile.setCachedFrame(cg, for: id)
+            }
+        }
+    }
+
     func stop() async {
         cancelled = true
+        suppressFrames = true
+        cacheLastFrameDeferred()
         guard let s = stream else { return }
         self.stream = nil
         try? await s.stopCapture()
@@ -289,6 +395,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stopSync(group: DispatchGroup) {
         cancelled = true
+        suppressFrames = true
+        cacheLastFrameDeferred()
         guard let s = stream else { return }
         self.stream = nil
         group.enter()
@@ -296,6 +404,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        if cancelled { return }
         guard type == .screen, sampleBuffer.isValid,
               let pixelBuffer = sampleBuffer.imageBuffer,
               let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else { return }
@@ -306,6 +415,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
 
+        var significantChange = false
         if let attachments {
             let dirtyRectsRaw = attachments[.dirtyRects] as? [[String: Any]] ?? []
             var dirtyArea: CGFloat = 0
@@ -321,14 +431,24 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             if totalArea > 0, dirtyArea / totalArea > 0.005 {
                 lastSignificantChangeAt = CFAbsoluteTimeGetCurrent()
+                significantChange = true
             }
         }
 
-        DispatchQueue.main.async { [content] in
+        guard significantChange || !hasRenderedLiveFrame else { return }
+
+        self.lastPixelBuffer = pixelBuffer
+
+        if suppressFrames { return }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.suppressFrames else { return }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            content.contents = surface
+            self.content.contents = surface
             CATransaction.commit()
+            self.hasRenderedFrame = true
+            self.hasRenderedLiveFrame = true
         }
     }
 

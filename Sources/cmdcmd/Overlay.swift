@@ -16,6 +16,7 @@ final class Overlay {
     private var savedFrames: [CGRect] = []
     private var prevFrontPID: pid_t = 0
     private var prevFrontTitle: String = ""
+    private var prevPickedWindowID: CGWindowID?
     private var showIgnored: Bool = false
     private var dragState: DragState?
     private let tracker: SpaceTracker
@@ -52,6 +53,9 @@ final class Overlay {
     private var activityTimer: Timer?
     private let hint = HintPill()
 
+    private var cachedShareable: SCShareableContent?
+    private var cachedShareableAt: CFAbsoluteTime = 0
+
     init(tracker: SpaceTracker, config: Config) {
         self.tracker = tracker
         self.config = config
@@ -62,6 +66,22 @@ final class Overlay {
         ) { [weak self] _ in
             guard let self, self.visible, !self.isPicking else { return }
             self.hide(activatePrevious: false)
+        }
+        prewarmShareable()
+    }
+
+    private func prewarmShareable() {
+        Task { [weak self] in
+            do {
+                let c = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.cachedShareable = c
+                    self.cachedShareableAt = CFAbsoluteTimeGetCurrent()
+                }
+            } catch {
+                Log.write("SCShareableContent prewarm failed: \(error)")
+            }
         }
     }
 
@@ -97,6 +117,7 @@ final class Overlay {
     }
 
     private func show() {
+        let t0 = CFAbsoluteTimeGetCurrent()
         prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         prevFrontTitle = focusedWindowTitle(pid: prevFrontPID) ?? ""
         let screen = Self.cursorScreen()
@@ -104,7 +125,53 @@ final class Overlay {
         displayKey = Self.displayKeyString(for: screen)
         visible = true
         startActivityTimer()
-        Task { await prepareAndShow() }
+        Log.debug(String(format: "show: setup=%.1fms prevFrontPID=%d title=\"%@\" cached=%@",
+                         (CFAbsoluteTimeGetCurrent() - t0) * 1000,
+                         prevFrontPID, prevFrontTitle as NSString,
+                         cachedShareable == nil ? "no" : "yes"))
+
+        if let cached = cachedShareable {
+            renderOverlay(content: cached, screen: screen)
+            prewarmShareable()
+        } else {
+            Task { await prepareAndShow() }
+        }
+    }
+
+    private func renderOverlay(content: SCShareableContent, screen: NSScreen) {
+        guard visible else { return }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let displayBounds = CGDisplayBounds(Self.displayID(for: screen))
+        let visibleFrame = screen.visibleFrame
+        let candidates = content.windows
+            .filter(Self.isCapturable)
+            .filter { Self.windowMostlyOn(displayBounds: displayBounds, window: $0) }
+        let tFilter = CFAbsoluteTimeGetCurrent()
+        let createdWindow = window == nil
+        let w = window ?? makeWindow(frame: visibleFrame)
+        window = w
+        w.setFrame(visibleFrame, display: false)
+        w.alphaValue = 1
+        let tWindow = CFAbsoluteTimeGetCurrent()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        installTiles(candidates: candidates)
+        CATransaction.commit()
+        let tTiles = CFAbsoluteTimeGetCurrent()
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if let v = view { w.makeFirstResponder(v) }
+        let tFront = CFAbsoluteTimeGetCurrent()
+        animateShowFromFocused(in: w)
+        let tEnd = CFAbsoluteTimeGetCurrent()
+        Log.debug(String(format: "render: filter=%.1f window=%.1f(new=%@) installTiles=%.1f orderFront+activate=%.1f animate=%.1f total=%.1f n=%d",
+                         (tFilter - t0) * 1000,
+                         (tWindow - tFilter) * 1000, createdWindow ? "yes" : "no",
+                         (tTiles - tWindow) * 1000,
+                         (tFront - tTiles) * 1000,
+                         (tEnd - tFront) * 1000,
+                         (tEnd - t0) * 1000,
+                         candidates.count))
     }
 
     private static func cursorScreen() -> NSScreen {
@@ -160,32 +227,28 @@ final class Overlay {
             Log.write("SCShareableContent failed: \(error)")
             scContent = nil
         }
-        let allCandidates = (scContent?.windows ?? []).filter(Self.isCapturable)
-        let frames: (display: CGRect, visible: CGRect) = await MainActor.run {
-            let s = self.activeScreen ?? Self.cursorScreen()
-            return (CGDisplayBounds(Self.displayID(for: s)), s.visibleFrame)
-        }
-        let candidates = allCandidates.filter { Self.windowMostlyOn(displayBounds: frames.display, window: $0) }
-
+        guard let content = scContent else { return }
         await MainActor.run {
-            guard visible else { return }
-            let w = window ?? makeWindow(frame: frames.visible)
-            window = w
-            w.setFrame(frames.visible, display: false)
-            w.alphaValue = 1
-            w.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            if let v = view { w.makeFirstResponder(v) }
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            installTiles(candidates: candidates)
-            CATransaction.commit()
-            animateShowFromFocused(in: w)
+            self.cachedShareable = content
+            self.cachedShareableAt = CFAbsoluteTimeGetCurrent()
+            let s = self.activeScreen ?? Self.cursorScreen()
+            self.renderOverlay(content: content, screen: s)
         }
     }
 
     private static let smoothEasing = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
     private static let pickDuration: Double = 0.16
+
+    private func suspendFrames() {
+        for t in allTiles { t.suppressFrames = true }
+    }
+
+    private func resumeFrames(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            for t in self.allTiles { t.suppressFrames = false }
+        }
+    }
 
     private func animateShowFromFocused(in w: NSWindow) {
         guard tiles.indices.contains(selectedIndex),
@@ -194,6 +257,7 @@ final class Overlay {
         let tile = tiles[selectedIndex]
         let gridFrame = tile.layer.frame
 
+        suspendFrames()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         tile.highlight = .none
@@ -207,6 +271,8 @@ final class Overlay {
         CATransaction.setAnimationTimingFunction(Self.smoothEasing)
         tile.setFrame(gridFrame)
         CATransaction.commit()
+
+        resumeFrames(after: Self.pickDuration)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.pickDuration) { [weak self, weak tile] in
             tile?.layer.zPosition = 0
@@ -247,14 +313,25 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             window?.contentView?.layer?.addSublayer(t.layer)
         }
         rebuildDisplayed()
-        if let i = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.scWindow.title ?? "") == prevFrontTitle })
-            ?? tiles.firstIndex(where: { $0.ownerPID == prevFrontPID }) {
+        let widMatch = prevPickedWindowID.flatMap { wid in tiles.firstIndex(where: { CGWindowID($0.scWindow.windowID) == wid }) }
+        let titleMatch = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.scWindow.title ?? "") == prevFrontTitle })
+        let pidMatch = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID })
+        if let i = widMatch ?? titleMatch ?? pidMatch {
             selectedIndex = i
             updateSelection()
         }
-        Task {
-            await withTaskGroup(of: Void.self) { group in
-                for t in ordered { group.addTask { await t.start() } }
+        let live = config.livePreviewsEnabled
+        let delay: TimeInterval = config.animations ? Self.pickDuration + 0.05 : 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [ordered] in
+            Task {
+                await withTaskGroup(of: Void.self) { group in
+                    for t in ordered {
+                        group.addTask {
+                            await t.snapshot()
+                            if live { await t.start() }
+                        }
+                    }
+                }
             }
         }
     }
@@ -404,6 +481,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
     private func hide(activatePrevious: Bool = true) {
         let toStop = allTiles
+        for t in toStop { t.suppressFrames = true }
         stopActivityTimer()
         window?.orderOut(nil)
         visible = false
@@ -418,8 +496,12 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         showIgnored = false
         view?.resetMomentaryPeek()
         hint.hide()
-        Task {
-            for t in toStop { await t.stop() }
+        Task(priority: .utility) {
+            await withTaskGroup(of: Void.self) { group in
+                for t in toStop {
+                    group.addTask(priority: .utility) { await t.stop() }
+                }
+            }
         }
         isZoomed = false
         savedFrames = []
@@ -427,6 +509,9 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             root.sublayers?.forEach { $0.removeFromSuperlayer() }
         }
         hint.reset()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.prewarmShareable()
+        }
     }
 
 
@@ -487,6 +572,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         let windowID = CGWindowID(tile.scWindow.windowID)
         let title = tile.scWindow.title
         prevFrontPID = 0
+        prevPickedWindowID = windowID
         isPicking = true
 
         raiseAXWindow(pid: pid, windowID: windowID, title: title)
@@ -501,6 +587,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             return
         }
 
+        suspendFrames()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         tile.highlight = .none
@@ -642,10 +729,12 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
     private func layoutTilesAnimated() {
         let bounds = window?.contentView?.bounds ?? .zero
+        suspendFrames()
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.18)
         layoutTiles(in: bounds)
         CATransaction.commit()
+        resumeFrames(after: 0.18)
     }
 
     private func beginZoom() {
@@ -666,6 +755,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         }
         savedFrames = tiles.map { $0.layer.frame }
         isZoomed = true
+        suspendFrames()
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.12)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
@@ -678,11 +768,13 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             }
         }
         CATransaction.commit()
+        resumeFrames(after: 0.12)
     }
 
     private func endZoom() {
         guard isZoomed else { return }
         isZoomed = false
+        suspendFrames()
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.12)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
@@ -692,6 +784,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             t.layer.opacity = 1
         }
         CATransaction.commit()
+        resumeFrames(after: 0.12)
         savedFrames = []
     }
 
