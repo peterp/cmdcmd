@@ -1,5 +1,4 @@
----
-bump: patch
----
+## v0.1.5 — 2026-04-28
 
 Add a changeset-driven release flow: drop a markdown entry in `.changeset/` per change; `./release.sh` consolidates pending entries into a CHANGELOG.md section, the appcast description, and the GitHub release notes, then bumps the version automatically.
+

@@ -6,14 +6,15 @@
         <description>cmdcmd updates</description>
         <language>en</language>
         <item>
-            <title>v0.1.4</title>
-            <sparkle:version>5</sparkle:version>
-            <sparkle:shortVersionString>0.1.4</sparkle:shortVersionString>
+            <title>v0.1.5</title>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <pubDate>Mon, 27 Apr 2026 19:00:41 +0000</pubDate>
-            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.4/cmdcmd.zip"
-                       sparkle:edSignature="qma6Uo2JY/9rq5W0ymZmxYwK/kOv8p9DSEXecifY0nnbVMThxTNifbOudlMYNoL55x04w/t+z+RV18qv3mfNAA=="
-                       length="1581528"
+            <description><![CDATA[<p>Add a changeset-driven release flow: drop a markdown entry in `.changeset/` per change; `./release.sh` consolidates pending entries into a CHANGELOG.md section, the appcast description, and the GitHub release notes, then bumps the version automatically.</p>]]></description>
+            <pubDate>Tue, 28 Apr 2026 19:51:17 +0000</pubDate>
+            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.5/cmdcmd.zip"
+                       sparkle:edSignature="lTpwjDODBmjswJwvSgn/2VUayIa/mWHWfbDED65gLlHbgg41QnkhAz/lfJFHKuqiSnnIla5M8wq6PPg7gIC4Aw=="
+                       length="1595530"
                        type="application/octet-stream" />
         </item>
     </channel>
