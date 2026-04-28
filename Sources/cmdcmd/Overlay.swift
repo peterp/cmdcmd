@@ -61,6 +61,7 @@ final class Overlay {
 
     private var cachedShareable: SCShareableContent?
     private var cachedShareableAt: CFAbsoluteTime = 0
+    private var refreshGeneration: Int = 0
 
     private static var usageOrder: [String] {
         get { (UserDefaults.standard.array(forKey: "appUsageOrder") as? [String]) ?? [] }
@@ -173,7 +174,7 @@ final class Overlay {
 
         if let cached = cachedShareable {
             renderOverlay(content: cached, screen: screen)
-            prewarmShareable()
+            Task { await refreshAndReconcile(screen: screen) }
         } else {
             Task { await prepareAndShow() }
         }
@@ -285,6 +286,111 @@ final class Overlay {
         }
     }
 
+    private func refreshAndReconcile(screen: NSScreen) async {
+        refreshGeneration &+= 1
+        let gen = refreshGeneration
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        } catch {
+            Log.write("SCShareableContent refresh failed: \(error)")
+            return
+        }
+        await MainActor.run {
+            self.cachedShareable = content
+            self.cachedShareableAt = CFAbsoluteTimeGetCurrent()
+            guard self.visible, gen == self.refreshGeneration else { return }
+            let displayBounds = CGDisplayBounds(Self.displayID(for: screen))
+            let candidates = content.windows
+                .filter(Self.isCapturable)
+                .filter { Self.windowMostlyOn(displayBounds: displayBounds, window: $0) }
+            self.reconcileTiles(candidates: candidates)
+        }
+    }
+
+    private static let reconcileDuration: TimeInterval = 0.2
+
+    private func reconcileTiles(candidates: [SCWindow]) {
+        let newIDs = Set(candidates.map { CGWindowID($0.windowID) })
+        let currentIDs = Set(allTiles.map { CGWindowID($0.scWindow.windowID) })
+        let addedIDs = newIDs.subtracting(currentIDs)
+        let removedIDs = currentIDs.subtracting(newIDs)
+        guard !addedIDs.isEmpty || !removedIDs.isEmpty else { return }
+        Log.debug("reconcile: +\(addedIDs.count) -\(removedIDs.count) (was \(currentIDs.count), now \(newIDs.count))")
+
+        let added: [Tile] = candidates.compactMap { w -> Tile? in
+            let id = CGWindowID(w.windowID)
+            guard addedIDs.contains(id), let pid = w.owningApplication?.processID else { return nil }
+            return Tile(scWindow: w, ownerPID: pid)
+        }
+        let removed: [Tile] = allTiles.filter { removedIDs.contains(CGWindowID($0.scWindow.windowID)) }
+        let kept: [Tile] = allTiles.filter { !removedIDs.contains(CGWindowID($0.scWindow.windowID)) }
+
+        let ordered = orderTiles(kept + added)
+        savedOrder = ordered.map { CGWindowID($0.scWindow.windowID) }
+        allTiles = ordered
+
+        let prevSelectedID = tiles.indices.contains(selectedIndex)
+            ? CGWindowID(tiles[selectedIndex].scWindow.windowID)
+            : nil
+
+        // Insert new layers invisibly so rebuildDisplayed's layout can place them
+        // before we animate them in.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for t in added {
+            t.layer.opacity = 0
+            window?.contentView?.layer?.addSublayer(t.layer)
+        }
+        CATransaction.commit()
+
+        let duration = config.animations ? Self.reconcileDuration : 0
+        suspendFrames()
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        CATransaction.setAnimationTimingFunction(Self.smoothEasing)
+        rebuildDisplayed()
+        // rebuildDisplayed unconditionally sets opacity = 1; restore the entrance state
+        // for added tiles and trigger the fade-out for removed tiles.
+        for t in added { t.layer.opacity = 1 }
+        for t in removed {
+            t.layer.opacity = 0
+            t.layer.zPosition = -1
+        }
+        CATransaction.commit()
+        resumeFrames(after: duration)
+
+        if let sid = prevSelectedID,
+           let idx = tiles.firstIndex(where: { CGWindowID($0.scWindow.windowID) == sid }) {
+            selectedIndex = idx
+            updateSelection()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            for t in removed { t.layer.removeFromSuperlayer() }
+            guard self != nil, !removed.isEmpty else { return }
+            Task(priority: .utility) {
+                await withTaskGroup(of: Void.self) { group in
+                    for t in removed {
+                        group.addTask(priority: .utility) { await t.stop() }
+                    }
+                }
+            }
+        }
+
+        let live = config.livePreviewsEnabled
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for t in added {
+                    group.addTask {
+                        await t.snapshot()
+                        if live { await t.start() }
+                    }
+                }
+            }
+        }
+    }
+
     private static let smoothEasing = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
     private static let pickDuration: Double = 0.16
 
@@ -337,19 +443,13 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         return total > 0 && interArea / total >= 0.5
     }
 
-    private func installTiles(candidates: [SCWindow]) {
-        let mcTiles: [Tile] = candidates.compactMap { w -> Tile? in
-            guard let pid = w.owningApplication?.processID else { return nil }
-            return Tile(scWindow: w, ownerPID: pid)
-        }
-
+    private func orderTiles(_ tiles: [Tile]) -> [Tile] {
         let saved = savedOrder
-        let ordered: [Tile]
         if config.usageOrderingEnabled {
             let usage = Self.usageOrder
             let usageRanks = Dictionary(uniqueKeysWithValues: usage.enumerated().map { ($1, $0) })
             let savedRanks = Dictionary(uniqueKeysWithValues: saved.enumerated().map { ($1, $0) })
-            ordered = mcTiles.sorted { a, b in
+            return tiles.sorted { a, b in
                 let ar = usageRanks[Self.usageKey(for: a)] ?? Int.max
                 let br = usageRanks[Self.usageKey(for: b)] ?? Int.max
                 if ar != br { return ar < br }
@@ -359,15 +459,24 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
                 return a.scWindow.windowID < b.scWindow.windowID
             }
         } else if saved.isEmpty {
-            ordered = mcTiles
+            return tiles
         } else {
-            let presentIDs = Set(mcTiles.map { CGWindowID($0.scWindow.windowID) })
+            let presentIDs = Set(tiles.map { CGWindowID($0.scWindow.windowID) })
             let knownInOrder = saved.filter { presentIDs.contains($0) }
             let knownIDs = Set(knownInOrder)
-            let known = knownInOrder.compactMap { wid in mcTiles.first(where: { CGWindowID($0.scWindow.windowID) == wid }) }
-            let unknown = mcTiles.filter { !knownIDs.contains(CGWindowID($0.scWindow.windowID)) }
-            ordered = known + unknown
+            let known = knownInOrder.compactMap { wid in tiles.first(where: { CGWindowID($0.scWindow.windowID) == wid }) }
+            let unknown = tiles.filter { !knownIDs.contains(CGWindowID($0.scWindow.windowID)) }
+            return known + unknown
         }
+    }
+
+    private func installTiles(candidates: [SCWindow]) {
+        let mcTiles: [Tile] = candidates.compactMap { w -> Tile? in
+            guard let pid = w.owningApplication?.processID else { return nil }
+            return Tile(scWindow: w, ownerPID: pid)
+        }
+
+        let ordered = orderTiles(mcTiles)
         savedOrder = ordered.map { CGWindowID($0.scWindow.windowID) }
 
         allTiles = ordered
@@ -557,6 +666,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     }
 
     private func hide(activatePrevious: Bool = true) {
+        refreshGeneration &+= 1
         let toStop = allTiles
         for t in toStop { t.suppressFrames = true }
         stopActivityTimer()
