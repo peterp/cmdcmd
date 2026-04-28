@@ -55,11 +55,34 @@ final class Overlay {
     }
 
     private var workspaceObserver: NSObjectProtocol?
+    private var appActivationObserver: NSObjectProtocol?
     private var activityTimer: Timer?
     private let hint = HintPill()
 
     private var cachedShareable: SCShareableContent?
     private var cachedShareableAt: CFAbsoluteTime = 0
+
+    private static var usageOrder: [String] {
+        get { (UserDefaults.standard.array(forKey: "appUsageOrder") as? [String]) ?? [] }
+        set { UserDefaults.standard.set(Array(newValue.prefix(128)), forKey: "appUsageOrder") }
+    }
+
+    private static func usageKey(pid: pid_t, bundleIdentifier: String?) -> String {
+        if let id = bundleIdentifier, !id.isEmpty { return id }
+        return "pid:\(pid)"
+    }
+
+    private static func usageKey(for tile: Tile) -> String {
+        usageKey(pid: tile.ownerPID, bundleIdentifier: tile.scWindow.owningApplication?.bundleIdentifier)
+    }
+
+    private static func recordUse(of app: NSRunningApplication) {
+        guard app.processIdentifier != getpid(), app.activationPolicy == .regular else { return }
+        let key = usageKey(pid: app.processIdentifier, bundleIdentifier: app.bundleIdentifier)
+        var order = usageOrder.filter { $0 != key }
+        order.insert(key, at: 0)
+        usageOrder = order
+    }
 
     init(tracker: SpaceTracker, config: Config) {
         self.tracker = tracker
@@ -71,6 +94,14 @@ final class Overlay {
         ) { [weak self] _ in
             guard let self, self.visible, !self.isPicking else { return }
             self.hide(activatePrevious: false)
+        }
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            Self.recordUse(of: app)
         }
         prewarmShareable()
     }
@@ -95,6 +126,9 @@ final class Overlay {
     deinit {
         if let o = workspaceObserver {
             NotificationCenter.default.removeObserver(o)
+        }
+        if let o = appActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(o)
         }
     }
 
@@ -123,7 +157,9 @@ final class Overlay {
 
     private func show() {
         let t0 = CFAbsoluteTimeGetCurrent()
-        prevFrontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        let prevApp = NSWorkspace.shared.frontmostApplication
+        prevFrontPID = prevApp?.processIdentifier ?? 0
+        if let prevApp { Self.recordUse(of: prevApp) }
         prevFrontTitle = focusedWindowTitle(pid: prevFrontPID) ?? ""
         let screen = Self.cursorScreen()
         activeScreen = screen
@@ -309,7 +345,20 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
         let saved = savedOrder
         let ordered: [Tile]
-        if saved.isEmpty {
+        if config.usageOrderingEnabled {
+            let usage = Self.usageOrder
+            let usageRanks = Dictionary(uniqueKeysWithValues: usage.enumerated().map { ($1, $0) })
+            let savedRanks = Dictionary(uniqueKeysWithValues: saved.enumerated().map { ($1, $0) })
+            ordered = mcTiles.sorted { a, b in
+                let ar = usageRanks[Self.usageKey(for: a)] ?? Int.max
+                let br = usageRanks[Self.usageKey(for: b)] ?? Int.max
+                if ar != br { return ar < br }
+                let asr = savedRanks[CGWindowID(a.scWindow.windowID)] ?? Int.max
+                let bsr = savedRanks[CGWindowID(b.scWindow.windowID)] ?? Int.max
+                if asr != bsr { return asr < bsr }
+                return a.scWindow.windowID < b.scWindow.windowID
+            }
+        } else if saved.isEmpty {
             ordered = mcTiles
         } else {
             let presentIDs = Set(mcTiles.map { CGWindowID($0.scWindow.windowID) })

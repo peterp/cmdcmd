@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController {
     init(config: Config) {
         model = SettingsModel(config: config)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -31,6 +31,7 @@ private final class SettingsModel: ObservableObject {
     @Published var livePreviews: Bool { didSet { save() } }
     @Published var displayMode: DisplayMode { didSet { save() } }
     @Published var letterJump: Bool { didSet { save() } }
+    @Published var usageOrdering: Bool { didSet { save() } }
     private var base: Config
     @Published var status: String = ""
     var onSave: ((Config) -> Void)?
@@ -40,6 +41,7 @@ private final class SettingsModel: ObservableObject {
         livePreviews = config.livePreviewsEnabled
         displayMode = config.displayModeOrDefault
         letterJump = config.letterJumpEnabled
+        usageOrdering = config.usageOrderingEnabled
         base = config
     }
 
@@ -49,12 +51,14 @@ private final class SettingsModel: ObservableObject {
         config.livePreviews = livePreviews
         config.displayMode = displayMode
         config.letterJump = letterJump
+        config.usageOrdering = usageOrdering
         do {
             try Config.patchOnDisk([
                 ("animations", animations ? "true" : "false"),
                 ("livePreviews", livePreviews ? "true" : "false"),
                 ("displayMode", "\"\(displayMode.rawValue)\""),
                 ("letterJump", letterJump ? "true" : "false"),
+                ("usageOrdering", usageOrdering ? "true" : "false"),
             ])
             base = config
             onSave?(config)
@@ -114,6 +118,16 @@ private struct SettingsRootView: View {
             }
             .toggleStyle(.switch)
 
+            Toggle(isOn: $model.usageOrdering) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Order tiles by recent app usage").font(.system(size: 13, weight: .medium))
+                    Text("Most recently used apps come first. Overrides drag-to-reorder across sessions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Show app in").font(.system(size: 13, weight: .medium))
                 Picker("", selection: $model.displayMode) {
@@ -140,6 +154,6 @@ private struct SettingsRootView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 420, minHeight: 420)
+        .frame(minWidth: 420, minHeight: 480)
     }
 }
