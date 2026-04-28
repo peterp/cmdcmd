@@ -44,7 +44,10 @@ private final class SettingsModel: ObservableObject {
         config.animations = animations
         config.livePreviews = livePreviews
         do {
-            try Config.save(config)
+            try Config.patchOnDisk([
+                ("animations", animations ? "true" : "false"),
+                ("livePreviews", livePreviews ? "true" : "false"),
+            ])
             base = config
             onSave?(config)
             status = "Saved"

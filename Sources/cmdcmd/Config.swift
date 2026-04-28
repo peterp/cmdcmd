@@ -29,13 +29,222 @@ struct Config: Codable {
         }
     }
 
-    static func save(_ config: Config) throws {
+    /// Patch top-level keys in the existing config file in-place, preserving
+    /// comments, key order, and formatting. Each value is written as the
+    /// literal JSON token in `updates` (e.g. `"true"`, `"false"`, `"null"`).
+    /// If the file is missing or unreadable, falls back to writing the
+    /// template + the requested updates.
+    static func patchOnDisk(_ updates: [(key: String, value: String)]) throws {
         let dir = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(config)
-        try data.write(to: fileURL, options: .atomic)
+
+        let existing = (try? String(contentsOf: fileURL, encoding: .utf8))
+        var text = existing ?? Self.template()
+
+        for (key, valueLiteral) in updates {
+            text = patch(text: text, key: key, valueLiteral: valueLiteral)
+        }
+        try text.write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+
+    /// Replace the value of `key` at the root object's top level. Inserts
+    /// the key before the closing `}` if it doesn't exist.
+    static func patch(text: String, key: String, valueLiteral: String) -> String {
+        if let range = topLevelValueRange(in: text, key: key) {
+            return text.replacingCharacters(in: range, with: valueLiteral)
+        }
+        return insertTopLevelKey(text: text, key: key, valueLiteral: valueLiteral)
+    }
+
+    /// Locate the value range for a top-level `"key": <value>` pair.
+    /// Range covers the value text only, excluding trailing comma/whitespace.
+    private static func topLevelValueRange(in text: String, key: String) -> Range<String.Index>? {
+        var i = text.startIndex
+        var depth = 0
+        var inString = false
+        var escape = false
+
+        while i < text.endIndex {
+            let c = text[i]
+            if escape { escape = false; i = text.index(after: i); continue }
+            if inString {
+                if c == "\\" { escape = true }
+                else if c == "\"" { inString = false }
+                i = text.index(after: i); continue
+            }
+            if c == "/" {
+                let n = text.index(after: i)
+                if n < text.endIndex && text[n] == "/" {
+                    while i < text.endIndex && text[i] != "\n" { i = text.index(after: i) }
+                    continue
+                }
+            }
+            if c == "\"" {
+                let keyOpen = text.index(after: i)
+                var j = keyOpen
+                var localEscape = false
+                while j < text.endIndex {
+                    let cc = text[j]
+                    if localEscape { localEscape = false; j = text.index(after: j); continue }
+                    if cc == "\\" { localEscape = true; j = text.index(after: j); continue }
+                    if cc == "\"" { break }
+                    j = text.index(after: j)
+                }
+                let keyClose = j
+                let next = j < text.endIndex ? text.index(after: j) : j
+
+                if depth == 1 {
+                    let keyText = String(text[keyOpen..<keyClose])
+                    if keyText == key,
+                       let valueRange = valueRangeAfterColon(in: text, from: next) {
+                        return valueRange
+                    }
+                }
+                i = next
+                continue
+            }
+            if c == "{" || c == "[" { depth += 1 }
+            else if c == "}" || c == "]" { depth -= 1 }
+            i = text.index(after: i)
+        }
+        return nil
+    }
+
+    private static func valueRangeAfterColon(in text: String, from start: String.Index) -> Range<String.Index>? {
+        var i = start
+        while i < text.endIndex && text[i].isWhitespace { i = text.index(after: i) }
+        guard i < text.endIndex, text[i] == ":" else { return nil }
+        i = text.index(after: i)
+        while i < text.endIndex && text[i].isWhitespace { i = text.index(after: i) }
+        let valueStart = i
+
+        var depth = 0
+        var inString = false
+        var escape = false
+        while i < text.endIndex {
+            let c = text[i]
+            if escape { escape = false; i = text.index(after: i); continue }
+            if inString {
+                if c == "\\" { escape = true }
+                else if c == "\"" { inString = false }
+                i = text.index(after: i); continue
+            }
+            if c == "\"" { inString = true; i = text.index(after: i); continue }
+            if c == "/" {
+                let n = text.index(after: i)
+                if n < text.endIndex && text[n] == "/" {
+                    while i < text.endIndex && text[i] != "\n" { i = text.index(after: i) }
+                    continue
+                }
+            }
+            if c == "{" || c == "[" { depth += 1; i = text.index(after: i); continue }
+            if c == "}" || c == "]" {
+                if depth == 0 { break }
+                depth -= 1; i = text.index(after: i); continue
+            }
+            if depth == 0 && c == "," { break }
+            i = text.index(after: i)
+        }
+        var valueEnd = i
+        while valueEnd > valueStart {
+            let prev = text.index(before: valueEnd)
+            if text[prev].isWhitespace { valueEnd = prev } else { break }
+        }
+        return valueStart..<valueEnd
+    }
+
+    /// Insert a new top-level key just before the root object's closing `}`.
+    private static func insertTopLevelKey(text: String, key: String, valueLiteral: String) -> String {
+        var lastTopBraceClose: String.Index?
+        var i = text.startIndex
+        var depth = 0
+        var inString = false
+        var escape = false
+        while i < text.endIndex {
+            let c = text[i]
+            if escape { escape = false; i = text.index(after: i); continue }
+            if inString {
+                if c == "\\" { escape = true }
+                else if c == "\"" { inString = false }
+                i = text.index(after: i); continue
+            }
+            if c == "/" {
+                let n = text.index(after: i)
+                if n < text.endIndex && text[n] == "/" {
+                    while i < text.endIndex && text[i] != "\n" { i = text.index(after: i) }
+                    continue
+                }
+            }
+            if c == "\"" { inString = true; i = text.index(after: i); continue }
+            if c == "{" || c == "[" { depth += 1 }
+            else if c == "}" || c == "]" {
+                if depth == 1 && c == "}" { lastTopBraceClose = i }
+                depth -= 1
+            }
+            i = text.index(after: i)
+        }
+        guard let close = lastTopBraceClose else { return text }
+
+        // Find indent of the closing brace's line.
+        var lineStart = close
+        while lineStart > text.startIndex {
+            let prev = text.index(before: lineStart)
+            if text[prev] == "\n" { break }
+            lineStart = prev
+        }
+        let indent = String(text[lineStart..<close])
+
+        // Walk back past whitespace/comments to find the previous non-comment, non-whitespace char.
+        // If it's not `,` and not `{`, we need to add a comma to the previous entry.
+        var scan = close
+        var needsTrailingCommaOnPrev = false
+        var sawNonSpace = false
+        while scan > text.startIndex {
+            let prev = text.index(before: scan)
+            let pc = text[prev]
+            if pc == "\n" || pc == " " || pc == "\t" {
+                scan = prev; continue
+            }
+            // Walk back over a `// ...` line comment trailing on the same line.
+            if pc == "\n" { scan = prev; continue }
+            // Detect comment: walk to start of line, see if it begins with //.
+            var ls = prev
+            while ls > text.startIndex {
+                let p2 = text.index(before: ls)
+                if text[p2] == "\n" { break }
+                ls = p2
+            }
+            let line = text[ls...prev]
+            if let slash = line.firstIndex(of: "/"),
+               text.index(after: slash) <= prev,
+               text[slash] == "/", text[text.index(after: slash)] == "/" {
+                scan = ls
+                continue
+            }
+            sawNonSpace = true
+            if pc != "," && pc != "{" {
+                needsTrailingCommaOnPrev = true
+            }
+            break
+        }
+        _ = sawNonSpace
+
+        let entry = "\(indent)  \"\(key)\": \(valueLiteral)"
+        var output = text
+        if needsTrailingCommaOnPrev {
+            // Insert "," at `scan` (right after the last non-ws/comment char).
+            output.insert(",", at: scan)
+        }
+        // Recompute close index after potential insert.
+        let newClose = needsTrailingCommaOnPrev ? output.index(close, offsetBy: 1) : close
+        var lineStart2 = newClose
+        while lineStart2 > output.startIndex {
+            let prev = output.index(before: lineStart2)
+            if output[prev] == "\n" { break }
+            lineStart2 = prev
+        }
+        output.insert(contentsOf: entry + "\n", at: lineStart2)
+        return output
     }
 
     static func ensureExists() throws -> URL {
