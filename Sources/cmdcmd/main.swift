@@ -26,8 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         userDriverDelegate: nil
     )
 
+    var settingsFactory: (() -> SettingsWindowController)?
+    private var settingsController: SettingsWindowController?
+
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         let openItem = NSMenuItem(title: "Open Config…", action: #selector(openConfig), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
@@ -37,6 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         checkItem.target = updaterController
         menu.addItem(checkItem)
         return menu
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openSettings() }
+        return true
+    }
+
+    @objc func openSettings() {
+        let controller = settingsController ?? settingsFactory?()
+        settingsController = controller
+        controller?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc func openConfig() {
@@ -54,10 +72,19 @@ app.delegate = appDelegate
 app.finishLaunching()
 
 _ = try? Config.ensureExists()
-let appConfig = Config.load()
+var appConfig = Config.load()
 let tracker = SpaceTracker()
 let overlay = Overlay(tracker: tracker, config: appConfig)
 var trigger: AnyObject?
+
+appDelegate.settingsFactory = {
+    let controller = SettingsWindowController(config: appConfig)
+    controller.onSave = { newConfig in
+        appConfig = newConfig
+        overlay.updateConfig(newConfig)
+    }
+    return controller
+}
 
 func startApp() {
     Task {

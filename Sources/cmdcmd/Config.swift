@@ -29,6 +29,15 @@ struct Config: Codable {
         }
     }
 
+    static func save(_ config: Config) throws {
+        let dir = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(config)
+        try data.write(to: fileURL, options: .atomic)
+    }
+
     static func ensureExists() throws -> URL {
         let dir = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
