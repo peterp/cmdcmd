@@ -6,15 +6,15 @@
         <description>cmdcmd updates</description>
         <language>en</language>
         <item>
-            <title>v0.1.5</title>
-            <sparkle:version>6</sparkle:version>
-            <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
+            <title>v0.1.6</title>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>0.1.6</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>Faster overlay: cached thumbnails make it appear instantly, even with lots of windows.</p><p>Smoother show animation, especially right after picking a window.</p><p>The window you picked last is reselected on the next open.</p>]]></description>
-            <pubDate>Tue, 28 Apr 2026 19:51:17 +0000</pubDate>
-            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.5/cmdcmd.zip"
-                       sparkle:edSignature="lTpwjDODBmjswJwvSgn/2VUayIa/mWHWfbDED65gLlHbgg41QnkhAz/lfJFHKuqiSnnIla5M8wq6PPg7gIC4Aw=="
-                       length="1595530"
+            <description><![CDATA[<p>More reliable cmd-cmd chord detection via a session event tap.</p><p>Type an app's first letter to select it in the overlay; repeat to cycle matches.</p><p>Add reusable NSWindow fade-in/out animation helpers.</p><p>Add a display-mode setting: dock, menu bar, or hidden.</p><p>Internal: CI now requires a changeset on every PR (label skip-changeset to opt out).</p><p>Optionally order tiles by recent app usage.</p><p>Use the bundled app icon for the Dock instead of overriding at runtime.</p><p>Add a built-in Settings window for visual config (animations and live previews) with live apply.</p>]]></description>
+            <pubDate>Tue, 28 Apr 2026 21:01:23 +0000</pubDate>
+            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.6/cmdcmd.zip"
+                       sparkle:edSignature="Y1K1uav6DTxvCNnqa7T5Vi1G4SjhXTnVItzVeycie0A51BSd/MG9gUNzb/T/UZmOWjrySOYjl+4V9R7LyTkwCg=="
+                       length="1644976"
                        type="application/octet-stream" />
         </item>
     </channel>
