@@ -13,13 +13,15 @@ struct Config: Codable {
     var livePreviews: Bool?
     var displayMode: DisplayMode?
     var letterJump: Bool?
+    var usageOrdering: Bool?
 
     var triggerSpec: String { trigger ?? "cmd-cmd" }
     var livePreviewsEnabled: Bool { livePreviews ?? true }
     var displayModeOrDefault: DisplayMode { displayMode ?? .dock }
     var letterJumpEnabled: Bool { letterJump ?? true }
+    var usageOrderingEnabled: Bool { usageOrdering ?? false }
 
-    static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil, displayMode: nil, letterJump: nil)
+    static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil, displayMode: nil, letterJump: nil, usageOrdering: nil)
 
     static var fileURL: URL {
         URL(fileURLWithPath: NSHomeDirectory())
