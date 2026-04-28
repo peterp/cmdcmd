@@ -6,15 +6,15 @@
         <description>cmdcmd updates</description>
         <language>en</language>
         <item>
-            <title>v0.1.6</title>
-            <sparkle:version>7</sparkle:version>
-            <sparkle:shortVersionString>0.1.6</sparkle:shortVersionString>
+            <title>v0.1.7</title>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>More reliable cmd-cmd chord detection via a session event tap.</p><p>Type an app's first letter to select it in the overlay; repeat to cycle matches.</p><p>Add reusable NSWindow fade-in/out animation helpers.</p><p>Add a display-mode setting: dock, menu bar, or hidden.</p><p>Internal: CI now requires a changeset on every PR (label skip-changeset to opt out).</p><p>Optionally order tiles by recent app usage.</p><p>Use the bundled app icon for the Dock instead of overriding at runtime.</p><p>Add a built-in Settings window for visual config (animations and live previews) with live apply.</p>]]></description>
-            <pubDate>Tue, 28 Apr 2026 21:01:23 +0000</pubDate>
-            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.6/cmdcmd.zip"
-                       sparkle:edSignature="Y1K1uav6DTxvCNnqa7T5Vi1G4SjhXTnVItzVeycie0A51BSd/MG9gUNzb/T/UZmOWjrySOYjl+4V9R7LyTkwCg=="
-                       length="1644976"
+            <description><![CDATA[<p>Refresh the window grid on every overlay open: cached tiles still render instantly, but a fresh window list is fetched in parallel and reconciled in — newly opened windows fade in, closed ones fade out, and the rest animate to their new grid positions.</p>]]></description>
+            <pubDate>Tue, 28 Apr 2026 22:15:02 +0000</pubDate>
+            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.7/cmdcmd.zip"
+                       sparkle:edSignature="zZc2eoSmxD05IlPE055t1LPa6Zqh84U6+ZbZoXu1Ulicl+O+XiMtHLTm8m7+l/fDYpqa9SKx8g1LTlUE5/aYCw=="
+                       length="1654139"
                        type="application/octet-stream" />
         </item>
     </channel>

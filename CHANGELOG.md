@@ -1,3 +1,7 @@
+## v0.1.7 — 2026-04-29
+
+Refresh the window grid on every overlay open: cached tiles still render instantly, but a fresh window list is fetched in parallel and reconciled in — newly opened windows fade in, closed ones fade out, and the rest animate to their new grid positions.
+
 ## v0.1.6 — 2026-04-28
 
 More reliable cmd-cmd chord detection via a session event tap.
