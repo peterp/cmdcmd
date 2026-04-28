@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController {
     init(config: Config) {
         model = SettingsModel(config: config)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 400),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -29,6 +29,7 @@ final class SettingsWindowController: NSWindowController {
 private final class SettingsModel: ObservableObject {
     @Published var animations: Bool { didSet { save() } }
     @Published var livePreviews: Bool { didSet { save() } }
+    @Published var displayMode: DisplayMode { didSet { save() } }
     private var base: Config
     @Published var status: String = ""
     var onSave: ((Config) -> Void)?
@@ -36,6 +37,7 @@ private final class SettingsModel: ObservableObject {
     init(config: Config) {
         animations = config.animations
         livePreviews = config.livePreviewsEnabled
+        displayMode = config.displayModeOrDefault
         base = config
     }
 
@@ -43,10 +45,12 @@ private final class SettingsModel: ObservableObject {
         var config = base
         config.animations = animations
         config.livePreviews = livePreviews
+        config.displayMode = displayMode
         do {
             try Config.patchOnDisk([
                 ("animations", animations ? "true" : "false"),
                 ("livePreviews", livePreviews ? "true" : "false"),
+                ("displayMode", "\"\(displayMode.rawValue)\""),
             ])
             base = config
             onSave?(config)
@@ -96,6 +100,20 @@ private struct SettingsRootView: View {
             }
             .toggleStyle(.switch)
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Show app in").font(.system(size: 13, weight: .medium))
+                Picker("", selection: $model.displayMode) {
+                    Text("Dock").tag(DisplayMode.dock)
+                    Text("Menu Bar").tag(DisplayMode.menuBar)
+                    Text("Hidden").tag(DisplayMode.hidden)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                Text("Hidden mode keeps the app running with no Dock or menu bar UI. Re-launch cmdcmd.app to bring Settings back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer(minLength: 0)
 
             HStack(spacing: 10) {
@@ -108,6 +126,6 @@ private struct SettingsRootView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 420, minHeight: 280)
+        .frame(minWidth: 420, minHeight: 360)
     }
 }

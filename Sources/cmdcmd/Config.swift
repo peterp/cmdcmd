@@ -1,15 +1,23 @@
 import Foundation
 
+enum DisplayMode: String, Codable, CaseIterable {
+    case dock
+    case menuBar = "menu-bar"
+    case hidden
+}
+
 struct Config: Codable {
     var animations: Bool
     var trigger: String?
     var bindings: [String: Action]
     var livePreviews: Bool?
+    var displayMode: DisplayMode?
 
     var triggerSpec: String { trigger ?? "cmd-cmd" }
     var livePreviewsEnabled: Bool { livePreviews ?? true }
+    var displayModeOrDefault: DisplayMode { displayMode ?? .dock }
 
-    static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil)
+    static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil, displayMode: nil)
 
     static var fileURL: URL {
         URL(fileURLWithPath: NSHomeDirectory())
