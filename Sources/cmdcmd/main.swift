@@ -68,9 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         if statusItem == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-            let icon = AppIcon.makePlaceholder()
-            icon.size = NSSize(width: 18, height: 18)
-            icon.isTemplate = false
+            let icon = NSImage(systemSymbolName: "command", accessibilityDescription: "cmdcmd")
+            icon?.isTemplate = true
             item.button?.image = icon
             item.menu = buildAppMenu()
             statusItem = item
