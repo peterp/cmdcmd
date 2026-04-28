@@ -206,6 +206,7 @@ final class Overlay {
 
     private func startActivityTimer() {
         activityTimer?.invalidate()
+        guard config.livePreviewsEnabled else { return }
         activityTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             guard let self else { return }
             let now = CFAbsoluteTimeGetCurrent()
