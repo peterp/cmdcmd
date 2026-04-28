@@ -151,7 +151,11 @@ final class Overlay {
         let w = window ?? makeWindow(frame: visibleFrame)
         window = w
         w.setFrame(visibleFrame, display: false)
-        w.alphaValue = 1
+        if config.animations {
+            w.alphaValue = 0
+        } else {
+            w.alphaValue = 1
+        }
         let tWindow = CFAbsoluteTimeGetCurrent()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -162,6 +166,9 @@ final class Overlay {
         NSApp.activate(ignoringOtherApps: true)
         if let v = view { w.makeFirstResponder(v) }
         let tFront = CFAbsoluteTimeGetCurrent()
+        if config.animations {
+            w.fadeInAndUp(distance: 0, duration: 0.10)
+        }
         animateShowFromFocused(in: w)
         let tEnd = CFAbsoluteTimeGetCurrent()
         Log.debug(String(format: "render: filter=%.1f window=%.1f(new=%@) installTiles=%.1f orderFront+activate=%.1f animate=%.1f total=%.1f n=%d",
@@ -483,7 +490,8 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         let toStop = allTiles
         for t in toStop { t.suppressFrames = true }
         stopActivityTimer()
-        window?.orderOut(nil)
+        let w = window
+        let animate = config.animations && w != nil && w!.alphaValue > 0
         visible = false
         if activatePrevious, prevFrontPID != 0,
            let app = NSRunningApplication(processIdentifier: prevFrontPID) {
@@ -505,8 +513,22 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         }
         isZoomed = false
         savedFrames = []
-        if let root = window?.contentView?.layer {
-            root.sublayers?.forEach { $0.removeFromSuperlayer() }
+        let clearLayers = { [weak self] in
+            if let root = self?.window?.contentView?.layer {
+                root.sublayers?.forEach { $0.removeFromSuperlayer() }
+            }
+        }
+        if animate, let w {
+            w.fadeOutAndDown(distance: 0, duration: 0.10) { [weak self] in
+                guard let self else { return }
+                if !self.visible {
+                    w.orderOut(nil)
+                    clearLayers()
+                }
+            }
+        } else {
+            w?.orderOut(nil)
+            clearLayers()
         }
         hint.reset()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
