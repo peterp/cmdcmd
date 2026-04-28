@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController {
     init(config: Config) {
         model = SettingsModel(config: config)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 460),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -30,6 +30,7 @@ private final class SettingsModel: ObservableObject {
     @Published var animations: Bool { didSet { save() } }
     @Published var livePreviews: Bool { didSet { save() } }
     @Published var displayMode: DisplayMode { didSet { save() } }
+    @Published var letterJump: Bool { didSet { save() } }
     private var base: Config
     @Published var status: String = ""
     var onSave: ((Config) -> Void)?
@@ -38,6 +39,7 @@ private final class SettingsModel: ObservableObject {
         animations = config.animations
         livePreviews = config.livePreviewsEnabled
         displayMode = config.displayModeOrDefault
+        letterJump = config.letterJumpEnabled
         base = config
     }
 
@@ -46,11 +48,13 @@ private final class SettingsModel: ObservableObject {
         config.animations = animations
         config.livePreviews = livePreviews
         config.displayMode = displayMode
+        config.letterJump = letterJump
         do {
             try Config.patchOnDisk([
                 ("animations", animations ? "true" : "false"),
                 ("livePreviews", livePreviews ? "true" : "false"),
                 ("displayMode", "\"\(displayMode.rawValue)\""),
+                ("letterJump", letterJump ? "true" : "false"),
             ])
             base = config
             onSave?(config)
@@ -100,6 +104,16 @@ private struct SettingsRootView: View {
             }
             .toggleStyle(.switch)
 
+            Toggle(isOn: $model.letterJump) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("First-letter app jump").font(.system(size: 13, weight: .medium))
+                    Text("Hold ⌃ (Control) + an app's first letter to select it; repeat to cycle matches.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
             VStack(alignment: .leading, spacing: 6) {
                 Text("Show app in").font(.system(size: 13, weight: .medium))
                 Picker("", selection: $model.displayMode) {
@@ -126,6 +140,6 @@ private struct SettingsRootView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 420, minHeight: 360)
+        .frame(minWidth: 420, minHeight: 420)
     }
 }

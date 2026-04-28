@@ -13,6 +13,7 @@ final class OverlayView: NSView {
     var onMouseDown: ((NSPoint) -> Void)?
     var onMouseDragged: ((NSPoint) -> Void)?
     var onMouseUp: ((NSPoint) -> Void)?
+    var onLetter: ((String) -> Void)?
     private var momentaryPeek = false
 
     override var acceptsFirstResponder: Bool { true }
@@ -23,6 +24,15 @@ final class OverlayView: NSView {
             if event.isARepeat { return }
             momentaryPeek = true
             onSpaceDown?()
+            return
+        }
+        if bareMods == [.control],
+           let onLetter,
+           let chars = event.charactersIgnoringModifiers?.lowercased(),
+           chars.count == 1,
+           let scalar = chars.unicodeScalars.first,
+           CharacterSet.lowercaseLetters.contains(scalar) {
+            onLetter(chars)
             return
         }
         if let action = keymap.action(for: event) {

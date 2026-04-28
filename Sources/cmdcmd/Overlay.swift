@@ -19,6 +19,7 @@ final class Overlay {
     private var prevPickedWindowID: CGWindowID?
     private var showIgnored: Bool = false
     private var dragState: DragState?
+    private var lastLetterJump: String?
     private let tracker: SpaceTracker
     private var config: Config
 
@@ -397,6 +398,21 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         updateHint()
     }
 
+    private func selectApp(startingWith letter: String) {
+        guard config.letterJumpEnabled, !tiles.isEmpty else { return }
+        let needle = letter.lowercased()
+        let start = lastLetterJump == needle ? selectedIndex + 1 : 0
+        let order = Array(start..<tiles.count) + Array(0..<min(start, tiles.count))
+        guard let match = order.first(where: { idx in
+            (tiles[idx].scWindow.owningApplication?.applicationName ?? "")
+                .lowercased()
+                .hasPrefix(needle)
+        }) else { return }
+        lastLetterJump = needle
+        selectedIndex = match
+        updateSelection()
+    }
+
     private func dispatch(_ action: Action) {
         switch action {
         case .pick: pick()
@@ -507,6 +523,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         allTiles = []
         selectedIndex = 0
         showIgnored = false
+        lastLetterJump = nil
         view?.resetMomentaryPeek()
         hint.hide()
         Task(priority: .utility) {
@@ -852,6 +869,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         v.onMouseDown = { [weak self] p in self?.mouseDownAt(p) }
         v.onMouseDragged = { [weak self] p in self?.mouseDraggedAt(p) }
         v.onMouseUp = { [weak self] p in self?.mouseUpAt(p) }
+        v.onLetter = { [weak self] letter in self?.selectApp(startingWith: letter) }
         w.contentView = v
         view = v
         return w
