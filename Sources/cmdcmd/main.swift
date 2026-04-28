@@ -16,7 +16,6 @@ if let i = args.firstIndex(of: "--render-iconset"), i + 1 < args.count {
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.regular)
 app.applicationIconImage = AppIcon.makePlaceholder()
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -28,8 +27,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     var settingsFactory: (() -> SettingsWindowController)?
     private var settingsController: SettingsWindowController?
+    private var statusItem: NSStatusItem?
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        return buildAppMenu()
+    }
+
+    private func buildAppMenu() -> NSMenu {
         let menu = NSMenu()
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         settingsItem.target = self
@@ -42,7 +46,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                    keyEquivalent: "")
         checkItem.target = updaterController
         menu.addItem(checkItem)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit cmdcmd", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         return menu
+    }
+
+    func applyDisplayMode(_ mode: DisplayMode) {
+        switch mode {
+        case .dock:
+            removeStatusItem()
+            NSApp.setActivationPolicy(.regular)
+        case .menuBar:
+            NSApp.setActivationPolicy(.accessory)
+            installStatusItem()
+        case .hidden:
+            removeStatusItem()
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private func installStatusItem() {
+        if statusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            let icon = NSImage(systemSymbolName: "command", accessibilityDescription: "cmdcmd")
+            icon?.isTemplate = true
+            item.button?.image = icon
+            item.menu = buildAppMenu()
+            statusItem = item
+        }
+    }
+
+    private func removeStatusItem() {
+        if let s = statusItem {
+            NSStatusBar.system.removeStatusItem(s)
+        }
+        statusItem = nil
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -73,6 +111,7 @@ app.finishLaunching()
 
 _ = try? Config.ensureExists()
 var appConfig = Config.load()
+appDelegate.applyDisplayMode(appConfig.displayModeOrDefault)
 let tracker = SpaceTracker()
 let overlay = Overlay(tracker: tracker, config: appConfig)
 var trigger: AnyObject?
@@ -82,6 +121,7 @@ appDelegate.settingsFactory = {
     controller.onSave = { newConfig in
         appConfig = newConfig
         overlay.updateConfig(newConfig)
+        appDelegate.applyDisplayMode(newConfig.displayModeOrDefault)
     }
     return controller
 }
