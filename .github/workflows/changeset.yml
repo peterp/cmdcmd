@@ -1,0 +1,31 @@
+name: changeset
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  require-changeset:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changeset') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify a changeset was added
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          added=$(git diff --name-only --diff-filter=A "$BASE_SHA" "$HEAD_SHA" \
+              | grep -E '^\.changeset/[^/]+\.md$' \
+              | grep -v '^\.changeset/HOWTO\.md$' || true)
+          if [ -z "$added" ]; then
+              echo "No changeset added under .changeset/."
+              echo "Run ./changeset.sh \"Short description\" and commit the result,"
+              echo "or add the 'skip-changeset' label if no user-visible change."
+              exit 1
+          fi
+          echo "Found changeset(s):"
+          echo "$added"

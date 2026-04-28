@@ -29,3 +29,12 @@ pending changesets wins. Bodies stack as separate paragraphs.
 The script writes `.changeset/<random-id>.md` and prints the path.
 
 This `HOWTO.md` is ignored by the consumer because it has no frontmatter.
+
+## Enforcement
+
+The `changeset` GitHub Action fails any PR that doesn't add a file under
+`.changeset/`. Apply the `skip-changeset` label to opt out (e.g. CI-only or
+docs-only changes).
+
+Bodies appear verbatim in the Sparkle update dialog — write them user-facing
+and avoid markdown (backticks, links, headings). Newlines render as `<br>`.
