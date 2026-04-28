@@ -20,7 +20,11 @@ final class Overlay {
     private var showIgnored: Bool = false
     private var dragState: DragState?
     private let tracker: SpaceTracker
-    private let config: Config
+    private var config: Config
+
+    func updateConfig(_ config: Config) {
+        self.config = config
+    }
 
     private var displayKey: String = "main"
     private var activeScreen: NSScreen?
@@ -202,6 +206,7 @@ final class Overlay {
 
     private func startActivityTimer() {
         activityTimer?.invalidate()
+        guard config.livePreviewsEnabled else { return }
         activityTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
             guard let self else { return }
             let now = CFAbsoluteTimeGetCurrent()
