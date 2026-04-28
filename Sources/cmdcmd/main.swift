@@ -16,7 +16,6 @@ if let i = args.firstIndex(of: "--render-iconset"), i + 1 < args.count {
 }
 
 let app = NSApplication.shared
-app.applicationIconImage = AppIcon.makePlaceholder()
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updaterController = SPUStandardUpdaterController(
