@@ -492,15 +492,12 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             updateSelection()
         }
         let live = config.livePreviewsEnabled
-        let delay: TimeInterval = config.animations ? Self.pickDuration + 0.05 : 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [ordered] in
-            Task {
-                await withTaskGroup(of: Void.self) { group in
-                    for t in ordered {
-                        group.addTask {
-                            await t.snapshot()
-                            if live { await t.start() }
-                        }
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for t in ordered {
+                    group.addTask {
+                        await t.snapshot()
+                        if live { await t.start() }
                     }
                 }
             }
