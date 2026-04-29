@@ -154,7 +154,6 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             CATransaction.setDisableActions(true)
             inner.contents = cached
             CATransaction.commit()
-            self.hasRenderedFrame = true
         }
     }
 
@@ -320,7 +319,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func snapshot() async {
-        if cancelled || hasRenderedFrame || hasRenderedLiveFrame { return }
+        if cancelled || hasRenderedLiveFrame { return }
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
         let config = captureConfig(maxDim: Tile.thumbMaxDim)
         do {
@@ -334,6 +333,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
                 self.content.contents = image
                 CATransaction.commit()
                 self.hasRenderedFrame = true
+                self.lastSignificantChangeAt = CFAbsoluteTimeGetCurrent()
             }
         } catch {
             Log.write("tile snapshot failed wid=\(scWindow.windowID): \(error)")
@@ -434,8 +434,6 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
                 significantChange = true
             }
         }
-
-        guard significantChange || !hasRenderedLiveFrame else { return }
 
         self.lastPixelBuffer = pixelBuffer
 
