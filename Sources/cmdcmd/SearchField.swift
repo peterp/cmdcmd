@@ -10,9 +10,12 @@ final class SearchField {
     private var cancelButton: NSButton?
     private weak var hostWindow: NSWindow?
 
+    enum ArrowDirection { case left, right, up, down }
+
     var onChange: ((String) -> Void)?
     var onCommit: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onArrow: ((ArrowDirection) -> Void)?
 
     var isVisible: Bool { container?.superview != nil && !(container?.isHidden ?? true) }
 
@@ -108,7 +111,7 @@ final class SearchField {
         v.addSubview(f)
         field = f
 
-        let btn = NSButton(title: "Cancel", target: self, action: #selector(cancel))
+        let btn = NSButton(title: "Done", target: self, action: #selector(cancel))
         btn.bezelStyle = .rounded
         btn.controlSize = .small
         btn.font = NSFont.systemFont(ofSize: 12, weight: .medium)
@@ -134,6 +137,10 @@ final class SearchField {
         onCancel?()
     }
 
+    fileprivate func didPressArrow(_ d: ArrowDirection) {
+        onArrow?(d)
+    }
+
     private final class TextDelegate: NSObject, NSTextFieldDelegate {
         static let shared = TextDelegate()
         weak var host: SearchField?
@@ -147,8 +154,48 @@ final class SearchField {
                 host?.didPressEscape()
                 return true
             }
+            // Swallow all caret-movement selectors so the cursor never moves
+            // inside the field. Forward the cardinal arrows to tile selection.
+            if let dir = Self.arrowDirection(for: selector) {
+                host?.didPressArrow(dir)
+                return true
+            }
+            if Self.movementSelectors.contains(selector) {
+                return true
+            }
             return false
         }
+
+        private static func arrowDirection(for selector: Selector) -> ArrowDirection? {
+            switch selector {
+            case #selector(NSResponder.moveLeft(_:)):  return .left
+            case #selector(NSResponder.moveRight(_:)): return .right
+            case #selector(NSResponder.moveUp(_:)):    return .up
+            case #selector(NSResponder.moveDown(_:)):  return .down
+            default: return nil
+            }
+        }
+
+        private static let movementSelectors: Set<Selector> = [
+            #selector(NSResponder.moveLeftAndModifySelection(_:)),
+            #selector(NSResponder.moveRightAndModifySelection(_:)),
+            #selector(NSResponder.moveUpAndModifySelection(_:)),
+            #selector(NSResponder.moveDownAndModifySelection(_:)),
+            #selector(NSResponder.moveWordLeft(_:)),
+            #selector(NSResponder.moveWordRight(_:)),
+            #selector(NSResponder.moveWordLeftAndModifySelection(_:)),
+            #selector(NSResponder.moveWordRightAndModifySelection(_:)),
+            #selector(NSResponder.moveToBeginningOfLine(_:)),
+            #selector(NSResponder.moveToEndOfLine(_:)),
+            #selector(NSResponder.moveToBeginningOfLineAndModifySelection(_:)),
+            #selector(NSResponder.moveToEndOfLineAndModifySelection(_:)),
+            #selector(NSResponder.moveToBeginningOfDocument(_:)),
+            #selector(NSResponder.moveToEndOfDocument(_:)),
+            #selector(NSResponder.moveToBeginningOfDocumentAndModifySelection(_:)),
+            #selector(NSResponder.moveToEndOfDocumentAndModifySelection(_:)),
+            #selector(NSResponder.moveToLeftEndOfLine(_:)),
+            #selector(NSResponder.moveToRightEndOfLine(_:)),
+        ]
     }
 }
 

@@ -546,10 +546,20 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard let win = window, let host = win.contentView else { return }
         searching = true
         search.onChange = { [weak self] q in self?.searchQueryChanged(q) }
-        search.onCommit = { [weak self] in self?.commitSearch() }
-        search.onCancel = { [weak self] in self?.cancelSearch() }
+        search.onCommit = { [weak self] in self?.dispatch(.pick) }
+        search.onCancel = { [weak self] in self?.commitSearch() }
+        search.onArrow = { [weak self] d in self?.dispatchSearchArrow(d) }
         search.show(in: host, query: searchQuery)
         findSearchTextField(in: host)?.onCmdF = { [weak self] in self?.commitSearch() }
+    }
+
+    private func dispatchSearchArrow(_ d: SearchField.ArrowDirection) {
+        switch d {
+        case .left:  dispatch(.moveLeft)
+        case .right: dispatch(.moveRight)
+        case .up:    dispatch(.moveUp)
+        case .down:  dispatch(.moveDown)
+        }
     }
 
     private func findSearchTextField(in view: NSView) -> SearchTextField? {
