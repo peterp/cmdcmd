@@ -294,7 +294,21 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         CATransaction.commit()
     }
 
-    private static let thumbMaxDim: CGFloat = 800
+    private static let thumbFloor: CGFloat = 700
+    private static let thumbCeiling: CGFloat = 2200
+    private static let thumbHeadroom: CGFloat = 1.5
+
+    /// Target snapshot resolution (longest side, in pixels) sized to the tile's
+    /// current on-screen footprint. Many small tiles → smaller thumbs; a few
+    /// large tiles → sharper thumbs. Live capture is unaffected and always
+    /// runs at full window resolution.
+    private func currentThumbMaxDim() -> CGFloat {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let longest = max(layer.frame.width, layer.frame.height)
+        guard longest > 0 else { return 1400 }
+        let target = longest * scale * Self.thumbHeadroom
+        return max(Self.thumbFloor, min(Self.thumbCeiling, target))
+    }
 
     private func captureConfig(maxDim: CGFloat? = nil) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
@@ -321,7 +335,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     func snapshot() async {
         if cancelled || hasRenderedLiveFrame { return }
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
-        let config = captureConfig(maxDim: Tile.thumbMaxDim)
+        let config = captureConfig(maxDim: currentThumbMaxDim())
         do {
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
             if cancelled || hasRenderedLiveFrame { return }
@@ -364,6 +378,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     private func cacheLastFrameDeferred() {
         let id = CGWindowID(self.scWindow.windowID)
         let q = self.queue
+        let cap = currentThumbMaxDim()
         Tile.cacheQueue.async {
             var pb: CVPixelBuffer?
             q.sync {
@@ -374,7 +389,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
             let ci = CIImage(cvPixelBuffer: pb)
             let extent = ci.extent
             let largest = max(extent.width, extent.height)
-            let factor = largest > Tile.thumbMaxDim ? Tile.thumbMaxDim / largest : 1
+            let factor = largest > cap ? cap / largest : 1
             let scaled = factor < 1
                 ? ci.transformed(by: CGAffineTransform(scaleX: factor, y: factor))
                 : ci

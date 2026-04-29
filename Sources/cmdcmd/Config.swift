@@ -332,6 +332,7 @@ struct Config: Codable {
         ("cmd+w",      .close),
         ("cmd+delete", .ignore),
         ("cmd+y",      .toggleHidden),
+        ("cmd+f",      .search),
         ("opt+g",      .tagGreen),
         ("opt+b",      .tagBlue),
         ("opt+r",      .tagRed),
