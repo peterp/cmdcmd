@@ -1,3 +1,7 @@
+## v0.2.1 — 2026-05-01
+
+Refresh tile aspect ratio when a window is resized between overlay opens. Previously, resizing a window while the overlay was hidden would leave the next cmd-cmd showing the tile at its old aspect ratio (and capturing the live preview at the old dimensions) until something else added or removed a window.
+
 ## v0.2.0 — 2026-05-01
 
 Smoother peek (hold Space): the blue selection halo no longer flashes ahead of the tile when zooming, and fades cleanly while the preview is held.

@@ -6,15 +6,15 @@
         <description>cmdcmd updates</description>
         <language>en</language>
         <item>
-            <title>v0.2.0</title>
-            <sparkle:version>9</sparkle:version>
-            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <title>v0.2.1</title>
+            <sparkle:version>10</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>Smoother peek (hold Space): the blue selection halo no longer flashes ahead of the tile when zooming, and fades cleanly while the preview is held.</p><p>Refresh tile previews on every overlay show so live updates aren't masked by the previous capture</p><p>Search mode (cmd+F): filter tiles by substring match on app name + window title. Use the arrow keys to move the tile selection from inside the search field; return commits, esc / Cancel clears.</p><p>Fix a crash when ScreenCaptureKit returns no image for a window (some DRM-protected content like Netflix in Firefox). The capture is now skipped quietly instead of taking the app down.</p><p>Live previews now recover automatically when ScreenCaptureKit drops a window's stream (minimised app, system suspension, capture daemon restarts). The tile keeps showing the last frame and the live capture resumes within a couple of seconds.</p>]]></description>
-            <pubDate>Fri, 01 May 2026 14:06:05 +0000</pubDate>
-            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.2.0/cmdcmd.zip"
-                       sparkle:edSignature="49gcXWgt72jxlcaZJoOSowa7bbtAs3+E6ukPVLx3HLH4wAGzg3dhz0CDUsHqxXbaJqUtYg03zHNLaHNnTaWCCQ=="
-                       length="1675953"
+            <description><![CDATA[<p>Refresh tile aspect ratio when a window is resized between overlay opens. Previously, resizing a window while the overlay was hidden would leave the next cmd-cmd showing the tile at its old aspect ratio (and capturing the live preview at the old dimensions) until something else added or removed a window.</p>]]></description>
+            <pubDate>Fri, 01 May 2026 14:22:56 +0000</pubDate>
+            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.2.1/cmdcmd.zip"
+                       sparkle:edSignature="q9fxOoyfwDpyXRnR4xBgP7KOnFblPTmSyBKTwTAb979p1F53CN51p+tbIE3r2vzQ1epkLfNPi82FEyubTIJ+Dw=="
+                       length="1679036"
                        type="application/octet-stream" />
         </item>
     </channel>
