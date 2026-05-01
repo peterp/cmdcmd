@@ -58,6 +58,9 @@ final class Overlay {
     private var appActivationObserver: NSObjectProtocol?
     private var activityTimer: Timer?
     private let hint = HintPill()
+    private let search = SearchField()
+    private var searchQuery: String = ""
+    private var searching: Bool = false
 
     private var cachedShareable: SCShareableContent?
     private var cachedShareableAt: CFAbsoluteTime = 0
@@ -506,10 +509,14 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
     private func rebuildDisplayed() {
         let ignored = ignoredKeys
-        let displayed = allTiles.filter { showIgnored ? true : !ignored.contains($0.ignoreKey) }
+        let baseDisplayed = allTiles.filter { showIgnored ? true : !ignored.contains($0.ignoreKey) }
+        let displayed = baseDisplayed.filter { Self.matches(tile: $0, query: searchQuery) }
+        let visibleSet = Set(displayed.map { ObjectIdentifier($0) })
         for t in allTiles {
             let isIgnored = ignored.contains(t.ignoreKey)
-            t.layer.isHidden = showIgnored ? false : isIgnored
+            let inSearch = visibleSet.contains(ObjectIdentifier(t))
+            let hiddenByIgnore = showIgnored ? false : isIgnored
+            t.layer.isHidden = hiddenByIgnore || !inSearch
             t.layer.opacity = (showIgnored && isIgnored) ? 0.3 : 1.0
             t.setNumber(nil)
             t.tintColorName = paneColors[CGWindowID(t.scWindow.windowID)]
@@ -524,6 +531,64 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             selectedIndex = max(0, tiles.count - 1)
         }
         updateSelection()
+    }
+
+    private static func matches(tile: Tile, query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty { return true }
+        let app = tile.scWindow.owningApplication?.applicationName ?? ""
+        let title = tile.scWindow.title ?? ""
+        let haystack = app + " " + title
+        return haystack.localizedCaseInsensitiveContains(q)
+    }
+
+    private func enterSearch() {
+        guard let win = window, let host = win.contentView else { return }
+        searching = true
+        search.onChange = { [weak self] q in self?.searchQueryChanged(q) }
+        search.onCommit = { [weak self] in self?.dispatch(.pick) }
+        search.onCancel = { [weak self] in self?.commitSearch() }
+        search.onArrow = { [weak self] d in self?.dispatchSearchArrow(d) }
+        search.show(in: host, query: searchQuery)
+        findSearchTextField(in: host)?.onCmdF = { [weak self] in self?.commitSearch() }
+    }
+
+    private func dispatchSearchArrow(_ d: SearchField.ArrowDirection) {
+        switch d {
+        case .left:  dispatch(.moveLeft)
+        case .right: dispatch(.moveRight)
+        case .up:    dispatch(.moveUp)
+        case .down:  dispatch(.moveDown)
+        }
+    }
+
+    private func findSearchTextField(in view: NSView) -> SearchTextField? {
+        for sub in view.subviews {
+            if let f = sub as? SearchTextField { return f }
+            if let nested = findSearchTextField(in: sub) { return nested }
+        }
+        return nil
+    }
+
+    private func commitSearch() {
+        searching = false
+        search.hide()
+        if let v = view { window?.makeFirstResponder(v) }
+    }
+
+    private func cancelSearch() {
+        searching = false
+        searchQuery = ""
+        search.hide()
+        rebuildDisplayed()
+        layoutTilesAnimated()
+        if let v = view { window?.makeFirstResponder(v) }
+    }
+
+    private func searchQueryChanged(_ q: String) {
+        searchQuery = q
+        rebuildDisplayed()
+        layoutTilesAnimated()
     }
 
     private func tagSelectedColor(_ name: String?) {
@@ -572,7 +637,10 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         switch action {
         case .pick: pick()
         case .dismiss:
-            if showIgnored { toggleShowIgnored() } else { dismiss() }
+            if showIgnored { toggleShowIgnored() }
+            else if !searchQuery.isEmpty { cancelSearch() }
+            else { dismiss() }
+        case .search: enterSearch()
         case .moveLeft:  move(dx: -1, dy: 0)
         case .moveRight: move(dx: 1, dy: 0)
         case .moveUp:    move(dx: 0, dy: -1)
@@ -680,6 +748,9 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         selectedIndex = 0
         showIgnored = false
         lastLetterJump = nil
+        searching = false
+        searchQuery = ""
+        search.hide()
         view?.resetMomentaryPeek()
         hint.hide()
         Task(priority: .utility) {
@@ -963,6 +1034,10 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             if i == selectedIndex {
                 t.layer.zPosition = 1
                 t.setFrame(target)
+                // Fade the accent border + blue glow during the zoom: at full
+                // size they dominate the screen and read as a flash of color.
+                t.layer.borderWidth = 0
+                t.layer.shadowOpacity = 0
             } else {
                 t.layer.opacity = 0
             }
@@ -982,6 +1057,10 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             if i < savedFrames.count { t.setFrame(savedFrames[i]) }
             t.layer.zPosition = 0
             t.layer.opacity = 1
+            if i == selectedIndex, t.highlight == .subtle {
+                t.layer.borderWidth = 3
+                t.layer.shadowOpacity = 0.6
+            }
         }
         CATransaction.commit()
         resumeFrames(after: 0.12)

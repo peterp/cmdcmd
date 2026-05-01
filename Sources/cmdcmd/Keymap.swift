@@ -21,6 +21,7 @@ enum Action: String, Codable, Hashable {
     case tagOrange = "tag-orange"
     case tagPurple = "tag-purple"
     case tagClear = "tag-clear"
+    case search
     case pick1 = "pick-1"
     case pick2 = "pick-2"
     case pick3 = "pick-3"
@@ -53,6 +54,7 @@ enum Action: String, Codable, Hashable {
         case .tagOrange:    return "Tag orange"
         case .tagPurple:    return "Tag purple"
         case .tagClear:     return "Clear tag"
+        case .search:       return "Search / filter visible windows"
         case .pick1:        return "Pick tile 1"
         case .pick2:        return "Pick tile 2"
         case .pick3:        return "Pick tile 3"
@@ -135,6 +137,7 @@ final class Keymap {
         "cmd+delete": .ignore,
         "cmd+y": .toggleHidden,
         "cmd+w": .close,
+        "cmd+f": .search,
         "opt+g": .tagGreen, "opt+b": .tagBlue, "opt+r": .tagRed, "opt+y": .tagYellow,
         "opt+o": .tagOrange, "opt+p": .tagPurple, "opt+0": .tagClear,
         "1": .pick1, "2": .pick2, "3": .pick3, "4": .pick4, "5": .pick5,
