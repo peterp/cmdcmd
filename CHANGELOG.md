@@ -1,3 +1,7 @@
+## v0.2.2 — 2026-05-01
+
+Drop phantom tiles instantly instead of fading them out: when a window was closed externally before you reopened the overlay, the cached tile briefly appeared and then animated away. It's now removed silently as soon as the fresh window list comes back.
+
 ## v0.2.1 — 2026-05-01
 
 Refresh tile aspect ratio when a window is resized between overlay opens. Previously, resizing a window while the overlay was hidden would leave the next cmd-cmd showing the tile at its old aspect ratio (and capturing the live preview at the old dimensions) until something else added or removed a window.
