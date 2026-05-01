@@ -332,12 +332,27 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         return config
     }
 
+    private func captureImageSafely(filter: SCContentFilter, config: SCStreamConfiguration) async throws -> CGImage {
+        try await withCheckedThrowingContinuation { cont in
+            SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, error in
+                if let image {
+                    cont.resume(returning: image)
+                } else {
+                    cont.resume(throwing: error ?? NSError(
+                        domain: "cmdcmd.Tile",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "captureImage returned no image"]))
+                }
+            }
+        }
+    }
+
     func snapshot() async {
         if cancelled || hasRenderedLiveFrame { return }
         let filter = SCContentFilter(desktopIndependentWindow: scWindow)
         let config = captureConfig(maxDim: currentThumbMaxDim())
         do {
-            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            let image = try await captureImageSafely(filter: filter, config: config)
             if cancelled || hasRenderedLiveFrame { return }
             Tile.setCachedFrame(image, for: CGWindowID(scWindow.windowID))
             await MainActor.run {
