@@ -1,3 +1,15 @@
+## v0.2.0 — 2026-05-01
+
+Smoother peek (hold Space): the blue selection halo no longer flashes ahead of the tile when zooming, and fades cleanly while the preview is held.
+
+Refresh tile previews on every overlay show so live updates aren't masked by the previous capture
+
+Search mode (cmd+F): filter tiles by substring match on app name + window title. Use the arrow keys to move the tile selection from inside the search field; return commits, esc / Cancel clears.
+
+Fix a crash when ScreenCaptureKit returns no image for a window (some DRM-protected content like Netflix in Firefox). The capture is now skipped quietly instead of taking the app down.
+
+Live previews now recover automatically when ScreenCaptureKit drops a window's stream (minimised app, system suspension, capture daemon restarts). The tile keeps showing the last frame and the live capture resumes within a couple of seconds.
+
 ## v0.1.7 — 2026-04-29
 
 Refresh the window grid on every overlay open: cached tiles still render instantly, but a fresh window list is fetched in parallel and reconciled in — newly opened windows fade in, closed ones fade out, and the rest animate to their new grid positions.

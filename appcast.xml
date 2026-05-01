@@ -6,15 +6,15 @@
         <description>cmdcmd updates</description>
         <language>en</language>
         <item>
-            <title>v0.1.7</title>
-            <sparkle:version>8</sparkle:version>
-            <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
+            <title>v0.2.0</title>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>Refresh the window grid on every overlay open: cached tiles still render instantly, but a fresh window list is fetched in parallel and reconciled in — newly opened windows fade in, closed ones fade out, and the rest animate to their new grid positions.</p>]]></description>
-            <pubDate>Tue, 28 Apr 2026 22:15:02 +0000</pubDate>
-            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.1.7/cmdcmd.zip"
-                       sparkle:edSignature="zZc2eoSmxD05IlPE055t1LPa6Zqh84U6+ZbZoXu1Ulicl+O+XiMtHLTm8m7+l/fDYpqa9SKx8g1LTlUE5/aYCw=="
-                       length="1654139"
+            <description><![CDATA[<p>Smoother peek (hold Space): the blue selection halo no longer flashes ahead of the tile when zooming, and fades cleanly while the preview is held.</p><p>Refresh tile previews on every overlay show so live updates aren't masked by the previous capture</p><p>Search mode (cmd+F): filter tiles by substring match on app name + window title. Use the arrow keys to move the tile selection from inside the search field; return commits, esc / Cancel clears.</p><p>Fix a crash when ScreenCaptureKit returns no image for a window (some DRM-protected content like Netflix in Firefox). The capture is now skipped quietly instead of taking the app down.</p><p>Live previews now recover automatically when ScreenCaptureKit drops a window's stream (minimised app, system suspension, capture daemon restarts). The tile keeps showing the last frame and the live capture resumes within a couple of seconds.</p>]]></description>
+            <pubDate>Fri, 01 May 2026 14:06:05 +0000</pubDate>
+            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.2.0/cmdcmd.zip"
+                       sparkle:edSignature="49gcXWgt72jxlcaZJoOSowa7bbtAs3+E6ukPVLx3HLH4wAGzg3dhz0CDUsHqxXbaJqUtYg03zHNLaHNnTaWCCQ=="
+                       length="1675953"
                        type="application/octet-stream" />
         </item>
     </channel>
