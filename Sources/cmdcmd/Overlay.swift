@@ -318,8 +318,25 @@ final class Overlay {
         let currentIDs = Set(allTiles.map { CGWindowID($0.scWindow.windowID) })
         let addedIDs = newIDs.subtracting(currentIDs)
         let removedIDs = currentIDs.subtracting(newIDs)
-        guard !addedIDs.isEmpty || !removedIDs.isEmpty else { return }
-        Log.debug("reconcile: +\(addedIDs.count) -\(removedIDs.count) (was \(currentIDs.count), now \(newIDs.count))")
+
+        // Refresh kept tiles' SCWindow so .frame reflects the current size.
+        // Without this, a window resized between prewarm and show keeps a
+        // stale frame and the tile renders at the old aspect ratio.
+        let candidateMap = Dictionary(uniqueKeysWithValues: candidates.map { (CGWindowID($0.windowID), $0) })
+        var resized: [Tile] = []
+        for t in allTiles {
+            let id = CGWindowID(t.scWindow.windowID)
+            guard !removedIDs.contains(id), let fresh = candidateMap[id] else { continue }
+            let oldSize = t.scWindow.frame.size
+            let newSize = fresh.frame.size
+            t.scWindow = fresh
+            if abs(oldSize.width - newSize.width) > 1 || abs(oldSize.height - newSize.height) > 1 {
+                resized.append(t)
+            }
+        }
+
+        guard !addedIDs.isEmpty || !removedIDs.isEmpty || !resized.isEmpty else { return }
+        Log.debug("reconcile: +\(addedIDs.count) -\(removedIDs.count) ~\(resized.count) (was \(currentIDs.count), now \(newIDs.count))")
 
         let added: [Tile] = candidates.compactMap { w -> Tile? in
             let id = CGWindowID(w.windowID)
@@ -382,12 +399,23 @@ final class Overlay {
         }
 
         let live = config.livePreviewsEnabled
-        Task {
-            await withTaskGroup(of: Void.self) { group in
-                for t in added {
-                    group.addTask {
-                        await t.snapshot()
-                        if live { await t.start() }
+        if !added.isEmpty {
+            Task {
+                await withTaskGroup(of: Void.self) { group in
+                    for t in added {
+                        group.addTask {
+                            await t.snapshot()
+                            if live { await t.start() }
+                        }
+                    }
+                }
+            }
+        }
+        if !resized.isEmpty {
+            Task {
+                await withTaskGroup(of: Void.self) { group in
+                    for t in resized {
+                        group.addTask { await t.refreshAfterResize(live: live) }
                     }
                 }
             }

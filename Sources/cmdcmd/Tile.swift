@@ -54,7 +54,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 
-    let scWindow: SCWindow
+    var scWindow: SCWindow
     let ownerPID: pid_t
     let ignoreKey: String
     let layer: CALayer
@@ -474,6 +474,25 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let s = stream else { return }
         self.stream = nil
         try? await s.stopCapture()
+    }
+
+    /// Underlying window resized after capture started. Tear down the existing
+    /// stream (its config is fixed at the old dimensions) and rebuild from the
+    /// fresh `scWindow.frame`.
+    func refreshAfterResize(live: Bool) async {
+        if cancelled { return }
+        if let s = stream {
+            self.stream = nil
+            stopWatchdog()
+            try? await s.stopCapture()
+        }
+        if cancelled { return }
+        hasRenderedLiveFrame = false
+        loggedFirstLiveFrame = false
+        await snapshot()
+        if live && !cancelled {
+            await start()
+        }
     }
 
     func stopSync(group: DispatchGroup) {
