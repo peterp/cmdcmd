@@ -8,7 +8,7 @@ enum Log {
             FileManager.default.createFile(atPath: path, contents: nil)
         }
         let h = try? FileHandle(forWritingTo: url)
-        try? h?.seekToEnd()
+        _ = try? h?.seekToEnd()
         return h
     }()
 

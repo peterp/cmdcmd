@@ -209,11 +209,32 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func setFrame(_ rect: CGRect) {
+        let newBounds = CGRect(origin: .zero, size: rect.size)
+        let newShadowPath = CGPath(roundedRect: newBounds, cornerWidth: 10, cornerHeight: 10, transform: nil)
+        let oldShadowPath = layer.shadowPath
+        let duration = CATransaction.animationDuration()
+        let actionsDisabled = CATransaction.disableActions()
+
         layer.frame = rect
-        content.frame = CGRect(origin: .zero, size: rect.size).insetBy(dx: 1, dy: 1)
+        content.frame = newBounds.insetBy(dx: 1, dy: 1)
+
+        // CALayer does not return a default action for shadowPath, so an
+        // implicit animation never starts. Without this, the path snaps to
+        // the new (often much larger) size at t=0 while layer.frame is still
+        // animating, which paints a phantom shadow far outside the small
+        // starting tile.
+        if !actionsDisabled, duration > 0, let oldShadowPath {
+            let anim = CABasicAnimation(keyPath: "shadowPath")
+            anim.fromValue = oldShadowPath
+            anim.toValue = newShadowPath
+            anim.duration = duration
+            anim.timingFunction = CATransaction.animationTimingFunction()
+            layer.add(anim, forKey: "shadowPath")
+        }
+        layer.shadowPath = newShadowPath
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerWidth: 10, cornerHeight: 10, transform: nil)
         layoutLabel()
         CATransaction.commit()
     }

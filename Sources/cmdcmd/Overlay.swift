@@ -1034,6 +1034,10 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             if i == selectedIndex {
                 t.layer.zPosition = 1
                 t.setFrame(target)
+                // Fade the accent border + blue glow during the zoom: at full
+                // size they dominate the screen and read as a flash of color.
+                t.layer.borderWidth = 0
+                t.layer.shadowOpacity = 0
             } else {
                 t.layer.opacity = 0
             }
@@ -1053,6 +1057,10 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             if i < savedFrames.count { t.setFrame(savedFrames[i]) }
             t.layer.zPosition = 0
             t.layer.opacity = 1
+            if i == selectedIndex, t.highlight == .subtle {
+                t.layer.borderWidth = 3
+                t.layer.shadowOpacity = 0.6
+            }
         }
         CATransaction.commit()
         resumeFrames(after: 0.12)
