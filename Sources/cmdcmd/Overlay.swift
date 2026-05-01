@@ -307,13 +307,16 @@ final class Overlay {
             let candidates = content.windows
                 .filter(Self.isCapturable)
                 .filter { Self.windowMostlyOn(displayBounds: displayBounds, window: $0) }
-            self.reconcileTiles(candidates: candidates)
+            // The first reconcile after a show fixes up phantom tiles from the
+            // prewarm cache: windows closed externally before the user reopened
+            // the overlay never really "appeared," so don't fade them out.
+            self.reconcileTiles(candidates: candidates, silentRemovals: true)
         }
     }
 
     private static let reconcileDuration: TimeInterval = 0.2
 
-    private func reconcileTiles(candidates: [SCWindow]) {
+    private func reconcileTiles(candidates: [SCWindow], silentRemovals: Bool = false) {
         let newIDs = Set(candidates.map { CGWindowID($0.windowID) })
         let currentIDs = Set(allTiles.map { CGWindowID($0.scWindow.windowID) })
         let addedIDs = newIDs.subtracting(currentIDs)
@@ -354,6 +357,23 @@ final class Overlay {
             ? CGWindowID(tiles[selectedIndex].scWindow.windowID)
             : nil
 
+        // For silent removals, drop the layers immediately — these tiles only
+        // showed up because of the stale prewarm cache and shouldn't be in the
+        // animated layout pass at all.
+        if silentRemovals && !removed.isEmpty {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            for t in removed { t.layer.removeFromSuperlayer() }
+            CATransaction.commit()
+            Task(priority: .utility) {
+                await withTaskGroup(of: Void.self) { group in
+                    for t in removed {
+                        group.addTask(priority: .utility) { await t.stop() }
+                    }
+                }
+            }
+        }
+
         // Insert new layers invisibly so rebuildDisplayed's layout can place them
         // before we animate them in.
         CATransaction.begin()
@@ -373,9 +393,11 @@ final class Overlay {
         // rebuildDisplayed unconditionally sets opacity = 1; restore the entrance state
         // for added tiles and trigger the fade-out for removed tiles.
         for t in added { t.layer.opacity = 1 }
-        for t in removed {
-            t.layer.opacity = 0
-            t.layer.zPosition = -1
+        if !silentRemovals {
+            for t in removed {
+                t.layer.opacity = 0
+                t.layer.zPosition = -1
+            }
         }
         CATransaction.commit()
         resumeFrames(after: duration)
@@ -386,13 +408,15 @@ final class Overlay {
             updateSelection()
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            for t in removed { t.layer.removeFromSuperlayer() }
-            guard self != nil, !removed.isEmpty else { return }
-            Task(priority: .utility) {
-                await withTaskGroup(of: Void.self) { group in
-                    for t in removed {
-                        group.addTask(priority: .utility) { await t.stop() }
+        if !silentRemovals && !removed.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+                for t in removed { t.layer.removeFromSuperlayer() }
+                guard self != nil else { return }
+                Task(priority: .utility) {
+                    await withTaskGroup(of: Void.self) { group in
+                        for t in removed {
+                            group.addTask(priority: .utility) { await t.stop() }
+                        }
                     }
                 }
             }
