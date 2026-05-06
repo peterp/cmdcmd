@@ -26,7 +26,7 @@ struct Config: Codable {
     var displayModeOrDefault: DisplayMode { displayMode ?? .dock }
     var letterJumpEnabled: Bool { letterJump ?? true }
     var usageOrderingEnabled: Bool { usageOrdering ?? false }
-    var tilePicksMode: TilePicks { tilePicks ?? .numbers }
+    var tilePicksMode: TilePicks { tilePicks ?? .letters }
 
     static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil, displayMode: nil, letterJump: nil, usageOrdering: nil, tilePicks: nil)
 
