@@ -121,7 +121,14 @@ final class LabelAssigner {
     /// "WhatsApp"    → ["Whats", "App"]
     /// "VSCodium"    → ["VS", "Codium"]
     static func tokenize(_ s: String) -> [String] {
-        s.split(whereSeparator: { $0.isWhitespace })
+        // Strip invisible formatting scalars (e.g. WhatsApp's CFBundleDisplayName
+        // begins with U+200E LEFT-TO-RIGHT MARK) so they can't sneak into the
+        // prefix as a zero-width first "letter".
+        let cleaned = String(String.UnicodeScalarView(s.unicodeScalars.filter { scalar in
+            let cat = scalar.properties.generalCategory
+            return cat != .control && cat != .format
+        }))
+        return cleaned.split(whereSeparator: { $0.isWhitespace })
             .flatMap { camelSplit(String($0)) }
             .filter { !$0.isEmpty }
     }
