@@ -11,8 +11,6 @@ enum Action: String, Codable, Hashable {
     case swapRight = "swap-right"
     case swapUp = "swap-up"
     case swapDown = "swap-down"
-    case ignore
-    case toggleHidden = "toggle-hidden"
     case close
     case tagGreen = "tag-green"
     case tagBlue = "tag-blue"
@@ -44,8 +42,6 @@ enum Action: String, Codable, Hashable {
         case .swapRight:    return "Swap with the tile on the right"
         case .swapUp:       return "Swap with the tile above"
         case .swapDown:     return "Swap with the tile below"
-        case .ignore:       return "Ignore / un-ignore the selected window"
-        case .toggleHidden: return "Toggle the 'show hidden' view"
         case .close:        return "Close the selected window"
         case .tagGreen:     return "Tag green"
         case .tagBlue:      return "Tag blue"
@@ -134,8 +130,6 @@ final class Keymap {
         "left": .moveLeft, "right": .moveRight, "up": .moveUp, "down": .moveDown,
         "a": .moveLeft, "d": .moveRight, "w": .moveUp, "s": .moveDown,
         "cmd+left": .swapLeft, "cmd+right": .swapRight, "cmd+up": .swapUp, "cmd+down": .swapDown,
-        "cmd+delete": .ignore,
-        "cmd+y": .toggleHidden,
         "cmd+w": .close,
         "cmd+f": .search,
         "opt+g": .tagGreen, "opt+b": .tagBlue, "opt+r": .tagRed, "opt+y": .tagYellow,

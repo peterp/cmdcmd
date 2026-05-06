@@ -23,14 +23,12 @@ Requires macOS 14+.
 | click / drag | Pick or drag-to-reorder |
 | ⌘ + arrow | Swap selected tile with neighbour in that direction |
 | ⌘W | Close selected window |
-| ⌘`delete` | Ignore / un-ignore selected window |
-| ⌘Y | Toggle "show hidden" view |
 | ⌘F | Search / filter visible windows (substring match on app + title) |
 | ⌥`g`/`b`/`r`/`y`/`o`/`p` | Tag selected tile (green/blue/red/yellow/orange/purple) |
 | ⌥`0` | Clear tag on selected tile |
 | `esc` | Dismiss overlay |
 
-Tile order and ignored windows persist per display via `UserDefaults`. Idle windows (no draw activity for ~2.5s) get a subtle indicator dot. The "show hidden" view displays every window — ignored ones at reduced opacity — so you can un-ignore them.
+Tile order persists per display via `UserDefaults`. Idle windows (no draw activity for ~2.5s) get a subtle indicator dot.
 
 ### Config file
 
@@ -56,7 +54,7 @@ Right-click the `⌘ ⌘` Dock icon and pick **Open Config…** — that opens `
 
 Binding spec — modifier tokens: `cmd`, `shift`, `opt` (or `option`/`alt`), `ctrl`. Special keys: `esc`, `space`, `return`, `delete`, `left`, `right`, `up`, `down`. Anything else is a single character.
 
-Actions: `pick`, `dismiss`, `move-left|right|up|down`, `swap-left|right|up|down`, `pick-1` … `pick-9`, `ignore`, `toggle-hidden`, `close`, `search`, `tag-green|blue|red|yellow|orange|purple|clear`.
+Actions: `pick`, `dismiss`, `move-left|right|up|down`, `swap-left|right|up|down`, `pick-1` … `pick-9`, `close`, `search`, `tag-green|blue|red|yellow|orange|purple|clear`.
 
 ## Build
 

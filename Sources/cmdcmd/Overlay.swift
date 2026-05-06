@@ -17,7 +17,6 @@ final class Overlay {
     private var prevFrontPID: pid_t = 0
     private var prevFrontTitle: String = ""
     private var prevPickedWindowID: CGWindowID?
-    private var showIgnored: Bool = false
     private var dragState: DragState?
     private var lastLetterJump: String?
     private let tracker: SpaceTracker
@@ -29,11 +28,6 @@ final class Overlay {
 
     private var displayKey: String = "main"
     private var activeScreen: NSScreen?
-
-    private var ignoredKeys: Set<String> {
-        get { Set((UserDefaults.standard.array(forKey: "ignoredWindows.\(displayKey)") as? [String]) ?? []) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: "ignoredWindows.\(displayKey)") }
-    }
 
     private var paneColors: [CGWindowID: String] = [:]
 
@@ -57,13 +51,10 @@ final class Overlay {
     private var workspaceObserver: NSObjectProtocol?
     private var appActivationObserver: NSObjectProtocol?
     private var activityTimer: Timer?
-    private let hint = HintPill()
     private let search = SearchField()
     private var searchQuery: String = ""
     private var searching: Bool = false
 
-    private var cachedShareable: SCShareableContent?
-    private var cachedShareableAt: CFAbsoluteTime = 0
     private var refreshGeneration: Int = 0
 
     private static var usageOrder: [String] {
@@ -111,14 +102,9 @@ final class Overlay {
     }
 
     private func prewarmShareable() {
-        Task { [weak self] in
+        Task {
             do {
-                let c = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-                await MainActor.run {
-                    guard let self else { return }
-                    self.cachedShareable = c
-                    self.cachedShareableAt = CFAbsoluteTimeGetCurrent()
-                }
+                _ = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             } catch {
                 Log.write("SCShareableContent prewarm failed: \(error)")
             }
@@ -169,18 +155,14 @@ final class Overlay {
         activeScreen = screen
         displayKey = Self.displayKeyString(for: screen)
         visible = true
+        refreshGeneration &+= 1
+        let gen = refreshGeneration
         startActivityTimer()
-        Log.debug(String(format: "show: setup=%.1fms prevFrontPID=%d title=\"%@\" cached=%@",
+        Log.debug(String(format: "show: setup=%.1fms prevFrontPID=%d title=\"%@\"",
                          (CFAbsoluteTimeGetCurrent() - t0) * 1000,
-                         prevFrontPID, prevFrontTitle as NSString,
-                         cachedShareable == nil ? "no" : "yes"))
+                         prevFrontPID, prevFrontTitle as NSString))
 
-        if let cached = cachedShareable {
-            renderOverlay(content: cached, screen: screen)
-            Task { await refreshAndReconcile(screen: screen) }
-        } else {
-            Task { await prepareAndShow() }
-        }
+        Task { await prepareAndShow(gen: gen, screen: screen) }
     }
 
     private func renderOverlay(content: SCShareableContent, screen: NSScreen) {
@@ -272,7 +254,7 @@ final class Overlay {
         return title as? String
     }
 
-    private func prepareAndShow() async {
+    private func prepareAndShow(gen: Int, screen: NSScreen) async {
         let scContent: SCShareableContent?
         do {
             scContent = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
@@ -282,167 +264,8 @@ final class Overlay {
         }
         guard let content = scContent else { return }
         await MainActor.run {
-            self.cachedShareable = content
-            self.cachedShareableAt = CFAbsoluteTimeGetCurrent()
-            let s = self.activeScreen ?? Self.cursorScreen()
-            self.renderOverlay(content: content, screen: s)
-        }
-    }
-
-    private func refreshAndReconcile(screen: NSScreen) async {
-        refreshGeneration &+= 1
-        let gen = refreshGeneration
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        } catch {
-            Log.write("SCShareableContent refresh failed: \(error)")
-            return
-        }
-        await MainActor.run {
-            self.cachedShareable = content
-            self.cachedShareableAt = CFAbsoluteTimeGetCurrent()
             guard self.visible, gen == self.refreshGeneration else { return }
-            let displayBounds = CGDisplayBounds(Self.displayID(for: screen))
-            let candidates = content.windows
-                .filter(Self.isCapturable)
-                .filter { Self.windowMostlyOn(displayBounds: displayBounds, window: $0) }
-            // The first reconcile after a show fixes up phantom tiles from the
-            // prewarm cache: windows closed externally before the user reopened
-            // the overlay never really "appeared," so don't fade them out.
-            self.reconcileTiles(candidates: candidates, silentRemovals: true)
-        }
-    }
-
-    private static let reconcileDuration: TimeInterval = 0.2
-
-    private func reconcileTiles(candidates: [SCWindow], silentRemovals: Bool = false) {
-        let newIDs = Set(candidates.map { CGWindowID($0.windowID) })
-        let currentIDs = Set(allTiles.map { CGWindowID($0.scWindow.windowID) })
-        let addedIDs = newIDs.subtracting(currentIDs)
-        let removedIDs = currentIDs.subtracting(newIDs)
-
-        // Refresh kept tiles' SCWindow so .frame reflects the current size.
-        // Without this, a window resized between prewarm and show keeps a
-        // stale frame and the tile renders at the old aspect ratio.
-        let candidateMap = Dictionary(uniqueKeysWithValues: candidates.map { (CGWindowID($0.windowID), $0) })
-        var resized: [Tile] = []
-        for t in allTiles {
-            let id = CGWindowID(t.scWindow.windowID)
-            guard !removedIDs.contains(id), let fresh = candidateMap[id] else { continue }
-            let oldSize = t.scWindow.frame.size
-            let newSize = fresh.frame.size
-            t.scWindow = fresh
-            if abs(oldSize.width - newSize.width) > 1 || abs(oldSize.height - newSize.height) > 1 {
-                resized.append(t)
-            }
-        }
-
-        guard !addedIDs.isEmpty || !removedIDs.isEmpty || !resized.isEmpty else { return }
-        Log.debug("reconcile: +\(addedIDs.count) -\(removedIDs.count) ~\(resized.count) (was \(currentIDs.count), now \(newIDs.count))")
-
-        let added: [Tile] = candidates.compactMap { w -> Tile? in
-            let id = CGWindowID(w.windowID)
-            guard addedIDs.contains(id), let pid = w.owningApplication?.processID else { return nil }
-            return Tile(scWindow: w, ownerPID: pid)
-        }
-        let removed: [Tile] = allTiles.filter { removedIDs.contains(CGWindowID($0.scWindow.windowID)) }
-        let kept: [Tile] = allTiles.filter { !removedIDs.contains(CGWindowID($0.scWindow.windowID)) }
-
-        let ordered = orderTiles(kept + added)
-        savedOrder = ordered.map { CGWindowID($0.scWindow.windowID) }
-        allTiles = ordered
-
-        let prevSelectedID = tiles.indices.contains(selectedIndex)
-            ? CGWindowID(tiles[selectedIndex].scWindow.windowID)
-            : nil
-
-        // For silent removals, drop the layers immediately — these tiles only
-        // showed up because of the stale prewarm cache and shouldn't be in the
-        // animated layout pass at all.
-        if silentRemovals && !removed.isEmpty {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            for t in removed { t.layer.removeFromSuperlayer() }
-            CATransaction.commit()
-            Task(priority: .utility) {
-                await withTaskGroup(of: Void.self) { group in
-                    for t in removed {
-                        group.addTask(priority: .utility) { await t.stop() }
-                    }
-                }
-            }
-        }
-
-        // Insert new layers invisibly so rebuildDisplayed's layout can place them
-        // before we animate them in.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for t in added {
-            t.layer.opacity = 0
-            window?.contentView?.layer?.addSublayer(t.layer)
-        }
-        CATransaction.commit()
-
-        let duration = config.animations ? Self.reconcileDuration : 0
-        suspendFrames()
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(duration)
-        CATransaction.setAnimationTimingFunction(Self.smoothEasing)
-        rebuildDisplayed()
-        // rebuildDisplayed unconditionally sets opacity = 1; restore the entrance state
-        // for added tiles and trigger the fade-out for removed tiles.
-        for t in added { t.layer.opacity = 1 }
-        if !silentRemovals {
-            for t in removed {
-                t.layer.opacity = 0
-                t.layer.zPosition = -1
-            }
-        }
-        CATransaction.commit()
-        resumeFrames(after: duration)
-
-        if let sid = prevSelectedID,
-           let idx = tiles.firstIndex(where: { CGWindowID($0.scWindow.windowID) == sid }) {
-            selectedIndex = idx
-            updateSelection()
-        }
-
-        if !silentRemovals && !removed.isEmpty {
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-                for t in removed { t.layer.removeFromSuperlayer() }
-                guard self != nil else { return }
-                Task(priority: .utility) {
-                    await withTaskGroup(of: Void.self) { group in
-                        for t in removed {
-                            group.addTask(priority: .utility) { await t.stop() }
-                        }
-                    }
-                }
-            }
-        }
-
-        let live = config.livePreviewsEnabled
-        if !added.isEmpty {
-            Task {
-                await withTaskGroup(of: Void.self) { group in
-                    for t in added {
-                        group.addTask {
-                            await t.snapshot()
-                            if live { await t.start() }
-                        }
-                    }
-                }
-            }
-        }
-        if !resized.isEmpty {
-            Task {
-                await withTaskGroup(of: Void.self) { group in
-                    for t in resized {
-                        group.addTask { await t.refreshAfterResize(live: live) }
-                    }
-                }
-            }
+            self.renderOverlay(content: content, screen: screen)
         }
     }
 
@@ -560,16 +383,11 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     }
 
     private func rebuildDisplayed() {
-        let ignored = ignoredKeys
-        let baseDisplayed = allTiles.filter { showIgnored ? true : !ignored.contains($0.ignoreKey) }
-        let displayed = baseDisplayed.filter { Self.matches(tile: $0, query: searchQuery) }
+        let displayed = allTiles.filter { Self.matches(tile: $0, query: searchQuery) }
         let visibleSet = Set(displayed.map { ObjectIdentifier($0) })
         for t in allTiles {
-            let isIgnored = ignored.contains(t.ignoreKey)
-            let inSearch = visibleSet.contains(ObjectIdentifier(t))
-            let hiddenByIgnore = showIgnored ? false : isIgnored
-            t.layer.isHidden = hiddenByIgnore || !inSearch
-            t.layer.opacity = (showIgnored && isIgnored) ? 0.3 : 1.0
+            t.layer.isHidden = !visibleSet.contains(ObjectIdentifier(t))
+            t.layer.opacity = 1.0
             t.setNumber(nil)
             t.tintColorName = paneColors[CGWindowID(t.scWindow.windowID)]
         }
@@ -650,26 +468,6 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         tiles[selectedIndex].tintColorName = name
     }
 
-    private func toggleIgnoreSelected() {
-        guard tiles.indices.contains(selectedIndex) else { return }
-        let key = tiles[selectedIndex].ignoreKey
-        var set = ignoredKeys
-        if set.contains(key) { set.remove(key) } else { set.insert(key) }
-        ignoredKeys = set
-        let prev = selectedIndex
-        rebuildDisplayed()
-        selectedIndex = min(prev, max(0, tiles.count - 1))
-        updateSelection()
-        layoutTilesAnimated()
-    }
-
-    private func toggleShowIgnored() {
-        showIgnored.toggle()
-        rebuildDisplayed()
-        layoutTilesAnimated()
-        updateHint()
-    }
-
     private func selectApp(startingWith letter: String) {
         guard config.letterJumpEnabled, !tiles.isEmpty else { return }
         let needle = letter.lowercased()
@@ -689,8 +487,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         switch action {
         case .pick: pick()
         case .dismiss:
-            if showIgnored { toggleShowIgnored() }
-            else if !searchQuery.isEmpty { cancelSearch() }
+            if !searchQuery.isEmpty { cancelSearch() }
             else { dismiss() }
         case .search: enterSearch()
         case .moveLeft:  move(dx: -1, dy: 0)
@@ -701,8 +498,6 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         case .swapRight: swapSelected(dx: 1, dy: 0)
         case .swapUp:    swapSelected(dx: 0, dy: -1)
         case .swapDown:  swapSelected(dx: 0, dy: 1)
-        case .ignore: toggleIgnoreSelected()
-        case .toggleHidden: toggleShowIgnored()
         case .close: closeSelected()
         case .tagGreen:  tagSelectedColor("green")
         case .tagBlue:   tagSelectedColor("blue")
@@ -763,15 +558,6 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         }
     }
 
-    private func updateHint() {
-        guard let win = window, let root = win.contentView?.layer else { return }
-        if showIgnored {
-            hint.show(text: "Hidden      ⌘⌫  toggle      esc  exit", in: root, bounds: win.contentView?.bounds ?? .zero)
-        } else {
-            hint.hide()
-        }
-    }
-
     func shutdown() {
         let toStop = allTiles
         allTiles = []
@@ -798,13 +584,11 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         tiles = []
         allTiles = []
         selectedIndex = 0
-        showIgnored = false
         lastLetterJump = nil
         searching = false
         searchQuery = ""
         search.hide()
         view?.resetMomentaryPeek()
-        hint.hide()
         Task(priority: .utility) {
             await withTaskGroup(of: Void.self) { group in
                 for t in toStop {
@@ -831,7 +615,6 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             w?.orderOut(nil)
             clearLayers()
         }
-        hint.reset()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.prewarmShareable()
         }
@@ -1013,8 +796,13 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         tile.layer.zPosition = 0
         if state.moved {
             if let target = tiles.firstIndex(where: { $0 !== tile && $0.layer.frame.contains(point) }) {
+                let other = tiles[target]
                 tiles.swapAt(state.index, target)
-                savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
+                if let ai = allTiles.firstIndex(where: { $0 === tile }),
+                   let bi = allTiles.firstIndex(where: { $0 === other }) {
+                    allTiles.swapAt(ai, bi)
+                }
+                savedOrder = allTiles.map { CGWindowID($0.scWindow.windowID) }
                 selectedIndex = target
                 renumberTiles()
             }
@@ -1036,8 +824,14 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard newCol >= 0, newCol < cols, newRow >= 0 else { return }
         let target = newRow * cols + newCol
         guard target >= 0, target < tiles.count, target != selectedIndex else { return }
+        let a = tiles[selectedIndex]
+        let b = tiles[target]
         tiles.swapAt(selectedIndex, target)
-        savedOrder = tiles.map { CGWindowID($0.scWindow.windowID) }
+        if let ai = allTiles.firstIndex(where: { $0 === a }),
+           let bi = allTiles.firstIndex(where: { $0 === b }) {
+            allTiles.swapAt(ai, bi)
+        }
+        savedOrder = allTiles.map { CGWindowID($0.scWindow.windowID) }
         selectedIndex = target
         renumberTiles()
         layoutTilesAnimated()

@@ -56,7 +56,6 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     var scWindow: SCWindow
     let ownerPID: pid_t
-    let ignoreKey: String
     let layer: CALayer
     private let content: CALayer
     private let numberChip: CALayer
@@ -91,9 +90,6 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     init(scWindow: SCWindow, ownerPID: pid_t) {
         self.scWindow = scWindow
         self.ownerPID = ownerPID
-        let bid = scWindow.owningApplication?.bundleIdentifier ?? ""
-        let title = scWindow.title ?? ""
-        self.ignoreKey = "\(bid)|||\(title)"
 
         let outer = CALayer()
         outer.masksToBounds = false
