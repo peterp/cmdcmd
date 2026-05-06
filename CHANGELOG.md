@@ -1,3 +1,7 @@
+## v0.3.1 — 2026-05-06
+
+Fix WhatsApp tile label showing as just "a" — strip Unicode formatting characters (e.g. U+200E LRM in WhatsApp's display name) before deriving the letter-pick prefix.
+
 ## v0.3.0 — 2026-05-06
 
 Add letter-prefix tile labels (default). Each tile gets a 2-char prefix from its app name (e.g. "gc" Google Chrome, "wa" WhatsApp); type the prefix to pick. Settings → Tile labels → Numbers to keep the previous 1-9 / wasd behavior.

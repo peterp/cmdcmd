@@ -6,15 +6,15 @@
         <description>cmdcmd updates</description>
         <language>en</language>
         <item>
-            <title>v0.3.0</title>
-            <sparkle:version>12</sparkle:version>
-            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+            <title>v0.3.1</title>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <description><![CDATA[<p>Add letter-prefix tile labels (default). Each tile gets a 2-char prefix from its app name (e.g. "gc" Google Chrome, "wa" WhatsApp); type the prefix to pick. Settings → Tile labels → Numbers to keep the previous 1-9 / wasd behavior.</p><p>Drop the ignore / show-hidden feature (cmd+delete, cmd+y were too hidden and the bundle+title key was unreliable). Render the overlay from a fresh window snapshot on every show — no more stale tiles sliding into place after cmd-cmd. Drag and cmd+arrow now persist order through every known window, so newly-opened windows reliably append at the back.</p>]]></description>
-            <pubDate>Wed, 06 May 2026 15:34:54 +0000</pubDate>
-            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.3.0/cmdcmd.zip"
-                       sparkle:edSignature="vt4ZyRYkRN7EmcVnQIcGijootevtARNMYpzrMBtpSi0W24M9RcgpxCUqtifwt200tCqpgGR7jkdo/dbSBEGCCg=="
-                       length="1682470"
+            <description><![CDATA[<p>Fix WhatsApp tile label showing as just "a" — strip Unicode formatting characters (e.g. U+200E LRM in WhatsApp's display name) before deriving the letter-pick prefix.</p>]]></description>
+            <pubDate>Wed, 06 May 2026 22:29:53 +0000</pubDate>
+            <enclosure url="https://github.com/peterp/cmdcmd/releases/download/v0.3.1/cmdcmd.zip"
+                       sparkle:edSignature="+gMaLjdld4Y4jtzi3BizfXJmKHyHnPzAB9y/VDxPMpTBklce1HDYzDQU8WRjuB8lqWBXHk+y95RW2f1VqoBqAA=="
+                       length="1683364"
                        type="application/octet-stream" />
         </item>
     </channel>
