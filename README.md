@@ -16,8 +16,8 @@ Requires macOS 14+.
 
 | Key | Action |
 |---|---|
-| arrow keys / `wasd` | Move selection |
-| `1`–`9` | Pick that tile |
+| arrow keys | Move selection |
+| type a tile's prefix | Pick that tile (e.g. `gc` for Google Chrome — see Tile labels below) |
 | `return` | Pick selected tile |
 | `space` (hold) | Peek (zoom selected tile while held) |
 | click / drag | Pick or drag-to-reorder |
@@ -26,7 +26,16 @@ Requires macOS 14+.
 | ⌘F | Search / filter visible windows (substring match on app + title) |
 | ⌥`g`/`b`/`r`/`y`/`o`/`p` | Tag selected tile (green/blue/red/yellow/orange/purple) |
 | ⌥`0` | Clear tag on selected tile |
-| `esc` | Dismiss overlay |
+| `delete` | Pop the last char from the pick buffer |
+| `esc` | Clear pick buffer, or dismiss overlay |
+
+### Tile labels
+
+Each tile gets a 2-char prefix derived from its app name — `gc` for Google Chrome, `wa` for WhatsApp, `cu` for Cursor, `cc` for Claude Code. Type the prefix to pick + activate the window; the matched portion highlights in yellow as you type, and tiles whose prefix doesn't match dim.
+
+A second window of the same app keeps the first letter and grabs the next home-row letter (`gj`, `gk`, …). Cross-app collisions extend to 3 chars (Calendar vs Camera → `ca` vs `cam`). Assignments are sticky — closing one window doesn't reshuffle the others.
+
+Switch to numeric `1`–`9` picks (and `wasd` movement, `⌃+letter` app jump) by setting `"tilePicks": "numbers"` in the config or via Settings.
 
 Tile order persists per display via `UserDefaults`. Idle windows (no draw activity for ~2.5s) get a subtle indicator dot.
 
