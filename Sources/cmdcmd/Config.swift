@@ -6,6 +6,11 @@ enum DisplayMode: String, Codable, CaseIterable {
     case hidden
 }
 
+enum TilePicks: String, Codable, CaseIterable {
+    case numbers
+    case letters
+}
+
 struct Config: Codable {
     var animations: Bool
     var trigger: String?
@@ -14,14 +19,16 @@ struct Config: Codable {
     var displayMode: DisplayMode?
     var letterJump: Bool?
     var usageOrdering: Bool?
+    var tilePicks: TilePicks?
 
     var triggerSpec: String { trigger ?? "cmd-cmd" }
     var livePreviewsEnabled: Bool { livePreviews ?? true }
     var displayModeOrDefault: DisplayMode { displayMode ?? .dock }
     var letterJumpEnabled: Bool { letterJump ?? true }
     var usageOrderingEnabled: Bool { usageOrdering ?? false }
+    var tilePicksMode: TilePicks { tilePicks ?? .numbers }
 
-    static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil, displayMode: nil, letterJump: nil, usageOrdering: nil)
+    static let `default` = Config(animations: true, trigger: nil, bindings: [:], livePreviews: nil, displayMode: nil, letterJump: nil, usageOrdering: nil, tilePicks: nil)
 
     static var fileURL: URL {
         URL(fileURLWithPath: NSHomeDirectory())
