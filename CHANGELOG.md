@@ -1,3 +1,9 @@
+## v0.3.0 — 2026-05-06
+
+Add letter-prefix tile labels (default). Each tile gets a 2-char prefix from its app name (e.g. "gc" Google Chrome, "wa" WhatsApp); type the prefix to pick. Settings → Tile labels → Numbers to keep the previous 1-9 / wasd behavior.
+
+Drop the ignore / show-hidden feature (cmd+delete, cmd+y were too hidden and the bundle+title key was unreliable). Render the overlay from a fresh window snapshot on every show — no more stale tiles sliding into place after cmd-cmd. Drag and cmd+arrow now persist order through every known window, so newly-opened windows reliably append at the back.
+
 ## v0.2.2 — 2026-05-01
 
 Drop phantom tiles instantly instead of fading them out: when a window was closed externally before you reopened the overlay, the cached tile briefly appeared and then animated away. It's now removed silently as soon as the fresh window list comes back.
