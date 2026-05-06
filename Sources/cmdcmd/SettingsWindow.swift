@@ -11,7 +11,7 @@ final class SettingsWindowController: NSWindowController {
     init(config: Config) {
         model = SettingsModel(config: config)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 620),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -32,6 +32,7 @@ private final class SettingsModel: ObservableObject {
     @Published var displayMode: DisplayMode { didSet { save() } }
     @Published var letterJump: Bool { didSet { save() } }
     @Published var usageOrdering: Bool { didSet { save() } }
+    @Published var tilePicks: TilePicks { didSet { save() } }
     private var base: Config
     @Published var status: String = ""
     var onSave: ((Config) -> Void)?
@@ -42,6 +43,7 @@ private final class SettingsModel: ObservableObject {
         displayMode = config.displayModeOrDefault
         letterJump = config.letterJumpEnabled
         usageOrdering = config.usageOrderingEnabled
+        tilePicks = config.tilePicksMode
         base = config
     }
 
@@ -52,6 +54,7 @@ private final class SettingsModel: ObservableObject {
         config.displayMode = displayMode
         config.letterJump = letterJump
         config.usageOrdering = usageOrdering
+        config.tilePicks = tilePicks
         do {
             try Config.patchOnDisk([
                 ("animations", animations ? "true" : "false"),
@@ -59,6 +62,7 @@ private final class SettingsModel: ObservableObject {
                 ("displayMode", "\"\(displayMode.rawValue)\""),
                 ("letterJump", letterJump ? "true" : "false"),
                 ("usageOrdering", usageOrdering ? "true" : "false"),
+                ("tilePicks", "\"\(tilePicks.rawValue)\""),
             ])
             base = config
             onSave?(config)
@@ -129,6 +133,19 @@ private struct SettingsRootView: View {
             .toggleStyle(.switch)
 
             VStack(alignment: .leading, spacing: 6) {
+                Text("Tile labels").font(.system(size: 13, weight: .medium))
+                Picker("", selection: $model.tilePicks) {
+                    Text("Numbers (1–9)").tag(TilePicks.numbers)
+                    Text("Letters (app initials)").tag(TilePicks.letters)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                Text("Letters mode types each tile's app initials (e.g. \"gc\" for Google Chrome) — type the prefix to pick. Disables 1–9 picks, ⌃+letter app jump, and the wasd movement keys.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Show app in").font(.system(size: 13, weight: .medium))
                 Picker("", selection: $model.displayMode) {
                     Text("Dock").tag(DisplayMode.dock)
@@ -154,6 +171,6 @@ private struct SettingsRootView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 420, minHeight: 480)
+        .frame(minWidth: 420, minHeight: 580)
     }
 }

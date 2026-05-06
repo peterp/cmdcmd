@@ -14,6 +14,9 @@ final class OverlayView: NSView {
     var onMouseDragged: ((NSPoint) -> Void)?
     var onMouseUp: ((NSPoint) -> Void)?
     var onLetter: ((String) -> Void)?
+    var onTypeahead: ((String) -> Void)?
+    var onTypeaheadBackspace: (() -> Void)?
+    var letterPickActive: Bool = false
     private var momentaryPeek = false
 
     override var acceptsFirstResponder: Bool { true }
@@ -25,6 +28,20 @@ final class OverlayView: NSView {
             momentaryPeek = true
             onSpaceDown?()
             return
+        }
+        if letterPickActive && bareMods.isEmpty {
+            if event.keyCode == 51, let onTypeaheadBackspace {
+                onTypeaheadBackspace()
+                return
+            }
+            if let chars = event.charactersIgnoringModifiers?.lowercased(),
+               chars.count == 1,
+               let scalar = chars.unicodeScalars.first,
+               CharacterSet.lowercaseLetters.contains(scalar) || CharacterSet.decimalDigits.contains(scalar),
+               let onTypeahead {
+                onTypeahead(chars)
+                return
+            }
         }
         if bareMods == [.control],
            let onLetter,

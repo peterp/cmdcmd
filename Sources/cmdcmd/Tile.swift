@@ -183,17 +183,19 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private let windowTitle: String
-    private var currentNumber: Int?
+    private var currentLabel: String?
+    private var currentMatchCount: Int = 0
 
-    func setNumber(_ n: Int?) {
-        currentNumber = n
+    func setLabel(_ s: String?, matchPrefix: Int = 0) {
+        currentLabel = s
+        currentMatchCount = max(0, min(matchPrefix, s?.count ?? 0))
         updateLabel()
     }
 
     private func updateLabel() {
         let trimmed = windowTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let n = currentNumber {
-            numberText.string = "\(n)"
+        if let label = currentLabel, !label.isEmpty {
+            numberText.string = Self.attributedLabel(label, matched: currentMatchCount)
             numberChip.isHidden = false
         } else {
             numberText.string = ""
@@ -202,6 +204,23 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         titleText.string = trimmed
         titlePill.isHidden = trimmed.isEmpty
         layoutLabel()
+    }
+
+    private static let labelFont = NSFont.systemFont(ofSize: 12, weight: .bold)
+    private static let labelMatchedColor = NSColor.systemYellow
+    private static let labelUnmatchedColor = NSColor.white
+
+    private static func attributedLabel(_ text: String, matched: Int) -> NSAttributedString {
+        let attr = NSMutableAttributedString(string: text)
+        let full = NSRange(location: 0, length: (text as NSString).length)
+        attr.addAttribute(.font, value: labelFont, range: full)
+        attr.addAttribute(.foregroundColor, value: labelUnmatchedColor, range: full)
+        if matched > 0 {
+            let clamped = min(matched, text.count)
+            let matchedRange = NSRange(location: 0, length: clamped)
+            attr.addAttribute(.foregroundColor, value: labelMatchedColor, range: matchedRange)
+        }
+        return attr
     }
 
     func setFrame(_ rect: CGRect) {
@@ -247,10 +266,20 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         let textY = (badgeHeight - lineHeight) / 2
 
         let chipHidden = numberChip.isHidden
+        let chipText = (currentLabel ?? "")
+        let chipWidth: CGFloat
+        if chipHidden || chipText.isEmpty {
+            chipWidth = 0
+        } else if chipText.count <= 1 {
+            chipWidth = badgeHeight
+        } else {
+            let measured = (chipText as NSString).size(withAttributes: [.font: Self.labelFont]).width
+            chipWidth = max(badgeHeight, ceil(measured) + hPad * 2)
+        }
         let chipFrame = CGRect(
             x: inset,
             y: rect.size.height - badgeHeight - inset,
-            width: chipHidden ? 0 : badgeHeight,
+            width: chipWidth,
             height: badgeHeight
         )
         if !chipHidden {

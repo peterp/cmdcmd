@@ -24,6 +24,10 @@ final class Overlay {
 
     func updateConfig(_ config: Config) {
         self.config = config
+        view?.letterPickActive = config.tilePicksMode == .letters
+        if config.tilePicksMode != .letters {
+            pickBuffer = ""
+        }
     }
 
     private var displayKey: String = "main"
@@ -56,6 +60,10 @@ final class Overlay {
     private var searching: Bool = false
 
     private var refreshGeneration: Int = 0
+
+    private let labelAssigner = LabelAssigner()
+    private var tileLabels: [CGWindowID: String] = [:]
+    private var pickBuffer: String = ""
 
     private static var usageOrder: [String] {
         get { (UserDefaults.standard.array(forKey: "appUsageOrder") as? [String]) ?? [] }
@@ -388,19 +396,44 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         for t in allTiles {
             t.layer.isHidden = !visibleSet.contains(ObjectIdentifier(t))
             t.layer.opacity = 1.0
-            t.setNumber(nil)
+            t.setLabel(nil)
             t.tintColorName = paneColors[CGWindowID(t.scWindow.windowID)]
         }
         tiles = displayed
-        for (i, t) in tiles.enumerated() {
-            t.setNumber(i < 9 ? i + 1 : nil)
-        }
+        applyTileLabels()
         let bounds = window?.contentView?.bounds ?? .zero
         layoutTiles(in: bounds)
         if !tiles.indices.contains(selectedIndex) {
             selectedIndex = max(0, tiles.count - 1)
         }
         updateSelection()
+    }
+
+    private func applyTileLabels() {
+        switch config.tilePicksMode {
+        case .numbers:
+            for (i, t) in tiles.enumerated() {
+                t.setLabel(i < 9 ? "\(i + 1)" : nil)
+            }
+        case .letters:
+            tileLabels = labelAssigner.assign(allTiles)
+            let buffer = pickBuffer
+            for t in allTiles {
+                let id = CGWindowID(t.scWindow.windowID)
+                let label = tileLabels[id]
+                let matched: Int
+                if !buffer.isEmpty, let label, label.hasPrefix(buffer) {
+                    matched = buffer.count
+                } else {
+                    matched = 0
+                }
+                t.setLabel(label, matchPrefix: matched)
+                if !buffer.isEmpty {
+                    let dims = !(label?.hasPrefix(buffer) ?? false)
+                    t.layer.opacity = dims ? 0.3 : 1.0
+                }
+            }
+        }
     }
 
     private static func matches(tile: Tile, query: String) -> Bool {
@@ -469,7 +502,8 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     }
 
     private func selectApp(startingWith letter: String) {
-        guard config.letterJumpEnabled, !tiles.isEmpty else { return }
+        guard config.tilePicksMode != .letters,
+              config.letterJumpEnabled, !tiles.isEmpty else { return }
         let needle = letter.lowercased()
         let start = lastLetterJump == needle ? selectedIndex + 1 : 0
         let order = Array(start..<tiles.count) + Array(0..<min(start, tiles.count))
@@ -487,7 +521,11 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         switch action {
         case .pick: pick()
         case .dismiss:
-            if !searchQuery.isEmpty { cancelSearch() }
+            if !pickBuffer.isEmpty {
+                pickBuffer = ""
+                applyTileLabels()
+            }
+            else if !searchQuery.isEmpty { cancelSearch() }
             else { dismiss() }
         case .search: enterSearch()
         case .moveLeft:  move(dx: -1, dy: 0)
@@ -587,6 +625,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         lastLetterJump = nil
         searching = false
         searchQuery = ""
+        pickBuffer = ""
         search.hide()
         view?.resetMomentaryPeek()
         Task(priority: .utility) {
@@ -839,9 +878,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     }
 
     private func renumberTiles() {
-        for (i, t) in tiles.enumerated() {
-            t.setNumber(i < 9 ? i + 1 : nil)
-        }
+        applyTileLabels()
     }
 
     private func layoutTilesAnimated() {
@@ -951,8 +988,40 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         v.onMouseDragged = { [weak self] p in self?.mouseDraggedAt(p) }
         v.onMouseUp = { [weak self] p in self?.mouseUpAt(p) }
         v.onLetter = { [weak self] letter in self?.selectApp(startingWith: letter) }
+        v.onTypeahead = { [weak self] ch in self?.appendPickBuffer(ch) }
+        v.onTypeaheadBackspace = { [weak self] in self?.popPickBuffer() }
+        v.letterPickActive = config.tilePicksMode == .letters
         w.contentView = v
         view = v
         return w
+    }
+
+    private func appendPickBuffer(_ ch: String) {
+        guard config.tilePicksMode == .letters else { return }
+        let candidate = pickBuffer + ch
+        let matches = tiles.filter { tile in
+            guard let label = tileLabels[CGWindowID(tile.scWindow.windowID)] else { return false }
+            return label.hasPrefix(candidate)
+        }
+        guard !matches.isEmpty else { return }
+        pickBuffer = candidate
+        if matches.count == 1, matches[0].layer.isHidden == false,
+           let label = tileLabels[CGWindowID(matches[0].scWindow.windowID)],
+           label == candidate {
+            if let idx = tiles.firstIndex(where: { $0 === matches[0] }) {
+                selectedIndex = idx
+                updateSelection()
+                pick()
+                return
+            }
+        }
+        applyTileLabels()
+    }
+
+    private func popPickBuffer() {
+        guard config.tilePicksMode == .letters else { return }
+        guard !pickBuffer.isEmpty else { return }
+        pickBuffer.removeLast()
+        applyTileLabels()
     }
 }
