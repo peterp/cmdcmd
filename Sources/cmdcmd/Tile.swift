@@ -15,6 +15,38 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private static let cacheQueue = DispatchQueue(label: "cmdcmd.tile.cache", qos: .utility)
 
+    // SCContentFilter / SCStream init have crashed (objc_retain of an
+    // SCWindow during concurrent copyWithZone) when tiles install in
+    // parallel. Serialize the synchronous setup; async work still overlaps.
+    private static let setupQueue = DispatchQueue(label: "cmdcmd.tile.setup", qos: .userInteractive)
+
+    private static func makeFilter(for window: SCWindow) async -> SCContentFilter {
+        await withCheckedContinuation { cont in
+            setupQueue.async {
+                cont.resume(returning: SCContentFilter(desktopIndependentWindow: window))
+            }
+        }
+    }
+
+    private static func makeStream(
+        filter: SCContentFilter,
+        configuration: SCStreamConfiguration,
+        output: Tile,
+        sampleHandlerQueue: DispatchQueue
+    ) async throws -> SCStream {
+        try await withCheckedThrowingContinuation { cont in
+            setupQueue.async {
+                let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
+                do {
+                    try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
+                    cont.resume(returning: stream)
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     static func cachedFrame(for id: CGWindowID) -> CGImage? {
         cacheLock.lock(); defer { cacheLock.unlock() }
         return frameCache[id]
@@ -409,7 +441,8 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func snapshot() async {
         if cancelled || hasRenderedLiveFrame { return }
-        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+        let filter = await Tile.makeFilter(for: scWindow)
+        if cancelled || hasRenderedLiveFrame { return }
         let config = captureConfig(maxDim: currentThumbMaxDim())
         do {
             let image = try await captureImageSafely(filter: filter, config: config)
@@ -431,14 +464,15 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func start() async {
         if cancelled { return }
-        let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+        let filter = await Tile.makeFilter(for: scWindow)
+        if cancelled { return }
         let config = captureConfig()
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.queueDepth = 3
 
         do {
-            let s = SCStream(filter: filter, configuration: config, delegate: self)
-            try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+            let s = try await Tile.makeStream(filter: filter, configuration: config, output: self, sampleHandlerQueue: queue)
+            if cancelled { return }
             try await s.startCapture()
             if cancelled {
                 try? await s.stopCapture()

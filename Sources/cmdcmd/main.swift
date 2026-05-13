@@ -17,6 +17,22 @@ if let i = args.firstIndex(of: "--render-iconset"), i + 1 < args.count {
 
 let app = NSApplication.shared
 
+if args.contains("--stress") {
+    NSApp.setActivationPolicy(.accessory)
+    app.finishLaunching()
+    let serialize = args.contains("--serialize")
+    let iterations: Int = {
+        if let i = args.firstIndex(of: "--iterations"), i + 1 < args.count, let n = Int(args[i + 1]) {
+            return n
+        }
+        return 500
+    }()
+    Task.detached(priority: .userInitiated) {
+        await StressTest.run(serialize: serialize, iterations: iterations)
+    }
+    RunLoop.main.run()
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
