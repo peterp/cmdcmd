@@ -1,3 +1,7 @@
+## v0.4.0 — 2026-05-14
+
+Replace per-window `SCStream` with polled `CGSHWCaptureWindowList` (private SkyLight) for live tile previews. Window enumeration also moves off ScreenCaptureKit to `CGWindowListCopyWindowInfo`, eliminating the SCK setup race fixed in #18 and dropping the CPU/GPU cost of N concurrent streams. Screen Recording permission is still required — current macOS gates `CGSHWCaptureWindowList` on it and still attributes capture to the app via the menu-bar indicator. See issue #21.
+
 ## v0.3.2 — 2026-05-14
 
 Fix a crash on the overlay's first open on macOS 26 when several windows are visible. The capture-setup calls used by each tile are now serialized so the framework no longer sees overlapping inits.
