@@ -17,17 +17,17 @@ final class LabelAssigner {
     /// in the assignment map keep their existing prefix; new tiles claim the
     /// next non-colliding prefix.
     func assign(_ tiles: [Tile]) -> [CGWindowID: String] {
-        let presentIDs = Set(tiles.map { CGWindowID($0.scWindow.windowID) })
+        let presentIDs = Set(tiles.map { CGWindowID($0.window.windowID) })
         entries = entries.filter { presentIDs.contains($0.key) }
 
         var used: [String: String] = [:] // prefix -> appKey
         for (_, e) in entries { used[e.prefix] = e.appKey }
 
         for tile in tiles {
-            let id = CGWindowID(tile.scWindow.windowID)
+            let id = tile.window.windowID
             if entries[id] != nil { continue }
-            let appName = tile.scWindow.owningApplication?.applicationName ?? "?"
-            let appKey = tile.scWindow.owningApplication?.bundleIdentifier ?? appName
+            let appName = tile.window.applicationName.isEmpty ? "?" : tile.window.applicationName
+            let appKey = tile.window.bundleIdentifier ?? appName
             let natural = Self.naturalPrefix(appName: appName)
 
             guard !natural.isEmpty else { continue }

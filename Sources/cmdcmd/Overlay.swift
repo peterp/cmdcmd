@@ -1,5 +1,4 @@
 import AppKit
-import ScreenCaptureKit
 
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(_ axEl: AXUIElement, _ wid: UnsafeMutablePointer<CGWindowID>) -> AXError
@@ -76,7 +75,7 @@ final class Overlay {
     }
 
     private static func usageKey(for tile: Tile) -> String {
-        usageKey(pid: tile.ownerPID, bundleIdentifier: tile.scWindow.owningApplication?.bundleIdentifier)
+        usageKey(pid: tile.ownerPID, bundleIdentifier: tile.window.bundleIdentifier)
     }
 
     private static func recordUse(of app: NSRunningApplication) {
@@ -105,17 +104,6 @@ final class Overlay {
         ) { notification in
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
             Self.recordUse(of: app)
-        }
-        prewarmShareable()
-    }
-
-    private func prewarmShareable() {
-        Task {
-            do {
-                _ = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-            } catch {
-                Log.write("SCShareableContent prewarm failed: \(error)")
-            }
         }
     }
 
@@ -173,12 +161,12 @@ final class Overlay {
         Task { await prepareAndShow(gen: gen, screen: screen) }
     }
 
-    private func renderOverlay(content: SCShareableContent, screen: NSScreen) {
+    private func renderOverlay(windows: [WindowInfo], screen: NSScreen) {
         guard visible else { return }
         let t0 = CFAbsoluteTimeGetCurrent()
         let displayBounds = CGDisplayBounds(Self.displayID(for: screen))
         let visibleFrame = screen.visibleFrame
-        let candidates = content.windows
+        let candidates = windows
             .filter(Self.isCapturable)
             .filter { Self.windowMostlyOn(displayBounds: displayBounds, window: $0) }
         let tFilter = CFAbsoluteTimeGetCurrent()
@@ -263,17 +251,10 @@ final class Overlay {
     }
 
     private func prepareAndShow(gen: Int, screen: NSScreen) async {
-        let scContent: SCShareableContent?
-        do {
-            scContent = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        } catch {
-            Log.write("SCShareableContent failed: \(error)")
-            scContent = nil
-        }
-        guard let content = scContent else { return }
+        let windows = WindowInfo.enumerate()
         await MainActor.run {
             guard self.visible, gen == self.refreshGeneration else { return }
-            self.renderOverlay(content: content, screen: screen)
+            self.renderOverlay(windows: windows, screen: screen)
         }
     }
 
@@ -321,7 +302,7 @@ final class Overlay {
         }
     }
 
-private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> Bool {
+private static func windowMostlyOn(displayBounds: CGRect, window: WindowInfo) -> Bool {
         let inter = window.frame.intersection(displayBounds)
         guard !inter.isNull else { return false }
         let interArea = inter.width * inter.height
@@ -339,39 +320,38 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
                 let ar = usageRanks[Self.usageKey(for: a)] ?? Int.max
                 let br = usageRanks[Self.usageKey(for: b)] ?? Int.max
                 if ar != br { return ar < br }
-                let asr = savedRanks[CGWindowID(a.scWindow.windowID)] ?? Int.max
-                let bsr = savedRanks[CGWindowID(b.scWindow.windowID)] ?? Int.max
+                let asr = savedRanks[CGWindowID(a.window.windowID)] ?? Int.max
+                let bsr = savedRanks[CGWindowID(b.window.windowID)] ?? Int.max
                 if asr != bsr { return asr < bsr }
-                return a.scWindow.windowID < b.scWindow.windowID
+                return a.window.windowID < b.window.windowID
             }
         } else if saved.isEmpty {
             return tiles
         } else {
-            let presentIDs = Set(tiles.map { CGWindowID($0.scWindow.windowID) })
+            let presentIDs = Set(tiles.map { CGWindowID($0.window.windowID) })
             let knownInOrder = saved.filter { presentIDs.contains($0) }
             let knownIDs = Set(knownInOrder)
-            let known = knownInOrder.compactMap { wid in tiles.first(where: { CGWindowID($0.scWindow.windowID) == wid }) }
-            let unknown = tiles.filter { !knownIDs.contains(CGWindowID($0.scWindow.windowID)) }
+            let known = knownInOrder.compactMap { wid in tiles.first(where: { CGWindowID($0.window.windowID) == wid }) }
+            let unknown = tiles.filter { !knownIDs.contains(CGWindowID($0.window.windowID)) }
             return known + unknown
         }
     }
 
-    private func installTiles(candidates: [SCWindow]) {
-        let mcTiles: [Tile] = candidates.compactMap { w -> Tile? in
-            guard let pid = w.owningApplication?.processID else { return nil }
-            return Tile(scWindow: w, ownerPID: pid)
+    private func installTiles(candidates: [WindowInfo]) {
+        let mcTiles: [Tile] = candidates.map { w in
+            Tile(window: w, ownerPID: w.processID)
         }
 
         let ordered = orderTiles(mcTiles)
-        savedOrder = ordered.map { CGWindowID($0.scWindow.windowID) }
+        savedOrder = ordered.map { CGWindowID($0.window.windowID) }
 
         allTiles = ordered
         for t in ordered {
             window?.contentView?.layer?.addSublayer(t.layer)
         }
         rebuildDisplayed()
-        let widMatch = prevPickedWindowID.flatMap { wid in tiles.firstIndex(where: { CGWindowID($0.scWindow.windowID) == wid }) }
-        let titleMatch = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.scWindow.title ?? "") == prevFrontTitle })
+        let widMatch = prevPickedWindowID.flatMap { wid in tiles.firstIndex(where: { CGWindowID($0.window.windowID) == wid }) }
+        let titleMatch = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID && ($0.window.title ?? "") == prevFrontTitle })
         let pidMatch = tiles.firstIndex(where: { $0.ownerPID == prevFrontPID })
         if let i = widMatch ?? titleMatch ?? pidMatch {
             selectedIndex = i
@@ -397,7 +377,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             t.layer.isHidden = !visibleSet.contains(ObjectIdentifier(t))
             t.layer.opacity = 1.0
             t.setLabel(nil)
-            t.tintColorName = paneColors[CGWindowID(t.scWindow.windowID)]
+            t.tintColorName = paneColors[CGWindowID(t.window.windowID)]
         }
         tiles = displayed
         applyTileLabels()
@@ -419,7 +399,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             tileLabels = labelAssigner.assign(allTiles)
             let buffer = pickBuffer
             for t in allTiles {
-                let id = CGWindowID(t.scWindow.windowID)
+                let id = CGWindowID(t.window.windowID)
                 let label = tileLabels[id]
                 let matched: Int
                 if !buffer.isEmpty, let label, label.hasPrefix(buffer) {
@@ -439,8 +419,8 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
     private static func matches(tile: Tile, query: String) -> Bool {
         let q = query.trimmingCharacters(in: .whitespaces)
         if q.isEmpty { return true }
-        let app = tile.scWindow.owningApplication?.applicationName ?? ""
-        let title = tile.scWindow.title ?? ""
+        let app = tile.window.applicationName
+        let title = tile.window.title ?? ""
         let haystack = app + " " + title
         return haystack.localizedCaseInsensitiveContains(q)
     }
@@ -496,7 +476,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
 
     private func tagSelectedColor(_ name: String?) {
         guard tiles.indices.contains(selectedIndex) else { return }
-        let id = CGWindowID(tiles[selectedIndex].scWindow.windowID)
+        let id = CGWindowID(tiles[selectedIndex].window.windowID)
         if let name { paneColors[id] = name } else { paneColors.removeValue(forKey: id) }
         tiles[selectedIndex].tintColorName = name
     }
@@ -508,7 +488,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         let start = lastLetterJump == needle ? selectedIndex + 1 : 0
         let order = Array(start..<tiles.count) + Array(0..<min(start, tiles.count))
         guard let match = order.first(where: { idx in
-            (tiles[idx].scWindow.owningApplication?.applicationName ?? "")
+            tiles[idx].window.applicationName
                 .lowercased()
                 .hasPrefix(needle)
         }) else { return }
@@ -560,7 +540,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard tiles.indices.contains(selectedIndex) else { return }
         let tile = tiles[selectedIndex]
         let pid = tile.ownerPID
-        let windowID = CGWindowID(tile.scWindow.windowID)
+        let windowID = CGWindowID(tile.window.windowID)
         pressCloseButton(pid: pid, windowID: windowID)
 
         let removed = tile
@@ -569,7 +549,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         removed.layer.removeFromSuperlayer()
         Task { await removed.stop() }
 
-        savedOrder = allTiles.map { CGWindowID($0.scWindow.windowID) }
+        savedOrder = allTiles.map { CGWindowID($0.window.windowID) }
         if !tiles.indices.contains(selectedIndex) {
             selectedIndex = max(0, tiles.count - 1)
         }
@@ -654,9 +634,6 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
             w?.orderOut(nil)
             clearLayers()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.prewarmShareable()
-        }
     }
 
 
@@ -673,7 +650,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         let (rects, cols) = GridLayout.frames(count: tiles.count, bounds: bounds, aspectRatio: ar)
         gridCols = cols
         for (tile, cell) in zip(tiles, rects) {
-            let src = tile.scWindow.frame
+            let src = tile.window.frame
             let srcAR = src.width / max(1, src.height)
             let cellAR = cell.width / max(1, cell.height)
             let fitted: CGRect
@@ -714,8 +691,8 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard tiles.indices.contains(selectedIndex), !isPicking else { return }
         let tile = tiles[selectedIndex]
         let pid = tile.ownerPID
-        let windowID = CGWindowID(tile.scWindow.windowID)
-        let title = tile.scWindow.title
+        let windowID = CGWindowID(tile.window.windowID)
+        let title = tile.window.title
         prevFrontPID = 0
         prevPickedWindowID = windowID
         isPicking = true
@@ -841,7 +818,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
                    let bi = allTiles.firstIndex(where: { $0 === other }) {
                     allTiles.swapAt(ai, bi)
                 }
-                savedOrder = allTiles.map { CGWindowID($0.scWindow.windowID) }
+                savedOrder = allTiles.map { CGWindowID($0.window.windowID) }
                 selectedIndex = target
                 renumberTiles()
             }
@@ -870,7 +847,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
            let bi = allTiles.firstIndex(where: { $0 === b }) {
             allTiles.swapAt(ai, bi)
         }
-        savedOrder = allTiles.map { CGWindowID($0.scWindow.windowID) }
+        savedOrder = allTiles.map { CGWindowID($0.window.windowID) }
         selectedIndex = target
         renumberTiles()
         layoutTilesAnimated()
@@ -896,7 +873,7 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         let bounds = window?.contentView?.bounds ?? .zero
         let pad: CGFloat = 4
         let avail = bounds.insetBy(dx: pad, dy: pad)
-        let src = tiles[selectedIndex].scWindow.frame
+        let src = tiles[selectedIndex].window.frame
         let srcAR = src.width / max(1, src.height)
         let availAR = avail.width / max(1, avail.height)
         let target: CGRect
@@ -956,12 +933,16 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         "TextInputMenuAgent", "Wallpaper",
     ]
 
-    private static func isCapturable(_ w: SCWindow) -> Bool {
-        guard let app = w.owningApplication else { return false }
-        if app.processID == getpid() { return false }
-        if systemOwners.contains(app.applicationName) { return false }
+    private static func isCapturable(_ w: WindowInfo) -> Bool {
+        if w.processID == getpid() { return false }
+        if w.applicationName.isEmpty { return false }
+        if systemOwners.contains(w.applicationName) { return false }
         if w.frame.width < 200 || w.frame.height < 200 { return false }
-        if !w.isOnScreen && w.windowLayer != 0 { return false }
+        if !w.isOnScreen && w.layer != 0 { return false }
+        // CGWindowListCopyWindowInfo returns every layer including menus,
+        // tooltips, and floating panels. Only the normal window layer (0) is
+        // user-facing app content.
+        if w.layer != 0 { return false }
         return true
     }
 
@@ -1000,13 +981,13 @@ private static func windowMostlyOn(displayBounds: CGRect, window: SCWindow) -> B
         guard config.tilePicksMode == .letters else { return }
         let candidate = pickBuffer + ch
         let matches = tiles.filter { tile in
-            guard let label = tileLabels[CGWindowID(tile.scWindow.windowID)] else { return false }
+            guard let label = tileLabels[CGWindowID(tile.window.windowID)] else { return false }
             return label.hasPrefix(candidate)
         }
         guard !matches.isEmpty else { return }
         pickBuffer = candidate
         if matches.count == 1, matches[0].layer.isHidden == false,
-           let label = tileLabels[CGWindowID(matches[0].scWindow.windowID)],
+           let label = tileLabels[CGWindowID(matches[0].window.windowID)],
            label == candidate {
             if let idx = tiles.firstIndex(where: { $0 === matches[0] }) {
                 selectedIndex = idx

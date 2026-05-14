@@ -22,6 +22,15 @@ enum Permission {
         }
     }
 
+    var pendingGuidance: String {
+        switch self {
+        case .screenRecording:
+            "Find ⌘ ⌘ in the list and turn it on. We'll detect it and relaunch automatically."
+        case .accessibility:
+            "Find ⌘ ⌘ in the list and turn it on. We'll detect it and relaunch automatically."
+        }
+    }
+
     var settingsURL: URL {
         switch self {
         case .screenRecording:
@@ -54,7 +63,7 @@ enum Permission {
 final class Onboarding {
     private var window: NSWindow?
     private var rows: [Permission: PermissionRow] = [:]
-    private var continueButton: NSButton!
+    private var pollTimer: Timer?
     private let onComplete: () -> Void
     private let permissions: [Permission] = [.screenRecording, .accessibility]
 
@@ -70,19 +79,18 @@ final class Onboarding {
 
     private func present() {
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 100),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         w.title = "Welcome to ⌘ ⌘"
-        w.center()
         w.isReleasedWhenClosed = false
 
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 16
+        stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let heading = NSTextField(labelWithString: "Two permissions to get started")
@@ -94,34 +102,16 @@ final class Onboarding {
         )
         blurb.font = NSFont.systemFont(ofSize: 13)
         blurb.textColor = .secondaryLabelColor
-        blurb.preferredMaxLayoutWidth = 472
+        blurb.preferredMaxLayoutWidth = 432
         stack.addArrangedSubview(blurb)
 
         for p in permissions {
             let row = PermissionRow(permission: p) { [weak self] in
-                p.request()
-                NSWorkspace.shared.open(p.settingsURL)
-                self?.refresh()
+                self?.grantTapped(p)
             }
             rows[p] = row
             stack.addArrangedSubview(row.view)
         }
-
-        continueButton = NSButton(title: "Continue", target: self, action: #selector(didTapContinue))
-        continueButton.bezelStyle = .rounded
-        continueButton.keyEquivalent = "\r"
-        continueButton.translatesAutoresizingMaskIntoConstraints = false
-
-        let bottomRow = NSView()
-        bottomRow.translatesAutoresizingMaskIntoConstraints = false
-        bottomRow.addSubview(continueButton)
-        NSLayoutConstraint.activate([
-            continueButton.trailingAnchor.constraint(equalTo: bottomRow.trailingAnchor),
-            continueButton.topAnchor.constraint(equalTo: bottomRow.topAnchor),
-            continueButton.bottomAnchor.constraint(equalTo: bottomRow.bottomAnchor),
-            bottomRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
-        ])
-        stack.addArrangedSubview(bottomRow)
 
         let content = NSView()
         content.addSubview(stack)
@@ -129,38 +119,76 @@ final class Onboarding {
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
-            bottomRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
-            bottomRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
         ])
         for r in rows.values {
             r.view.leadingAnchor.constraint(equalTo: stack.leadingAnchor).isActive = true
             r.view.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
         }
         w.contentView = content
+        content.layoutSubtreeIfNeeded()
+        w.setContentSize(content.fittingSize)
+        w.center()
         window = w
 
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
         refresh()
+        startPolling()
     }
 
-    @discardableResult
-    private func refresh() -> Bool {
+    private func grantTapped(_ p: Permission) {
+        p.request()
+        NSWorkspace.shared.open(p.settingsURL)
+        rows[p]?.setPending(true)
+    }
+
+    private func startPolling() {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    private func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
+    private func refresh() {
         var allGranted = true
         for p in permissions {
             let granted = p.granted()
             rows[p]?.setGranted(granted)
             if !granted { allGranted = false }
         }
-        return allGranted
+        if allGranted {
+            stopPolling()
+            relaunchOrComplete()
+        }
     }
 
-    @objc private func didTapContinue() {
-        guard refresh() else { return }
+    /// Accessibility (and Screen Recording, when it was here) often need a
+    /// fresh process before global event taps / capture sessions register
+    /// against the new TCC state. Relaunching is the only reliable way to get
+    /// a clean install. If the relaunch fails for any reason, fall back to
+    /// inline `onComplete` so the user isn't stuck.
+    private func relaunchOrComplete() {
+        let bundleURL = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
         window?.orderOut(nil)
-        window = nil
-        onComplete()
+        NSWorkspace.shared.openApplication(at: bundleURL, configuration: config) { [weak self] app, error in
+            DispatchQueue.main.async {
+                if app != nil, error == nil {
+                    NSApp.terminate(nil)
+                } else {
+                    Log.write("onboarding relaunch failed: \(error?.localizedDescription ?? "nil"); continuing in-process")
+                    self?.window = nil
+                    self?.onComplete()
+                }
+            }
+        }
     }
 }
 
@@ -168,7 +196,9 @@ private final class PermissionRow {
     let view: NSView
     private let dot: NSView
     private let button: NSButton
+    private let rationale: NSTextField
     private let permission: Permission
+    private var pending = false
 
     init(permission: Permission, onGrant: @escaping () -> Void) {
         self.permission = permission
@@ -191,7 +221,8 @@ private final class PermissionRow {
         let rationale = NSTextField(wrappingLabelWithString: permission.rationale)
         rationale.font = NSFont.systemFont(ofSize: 12)
         rationale.textColor = .secondaryLabelColor
-        rationale.preferredMaxLayoutWidth = 340
+        rationale.preferredMaxLayoutWidth = 300
+        self.rationale = rationale
 
         let textStack = NSStackView(views: [title, rationale])
         textStack.orientation = .vertical
@@ -201,6 +232,7 @@ private final class PermissionRow {
 
         let btn = ButtonWrapper.make(title: "Grant", action: onGrant)
         btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.setContentHuggingPriority(.required, for: .horizontal)
         self.button = btn
 
         container.addSubview(dot)
@@ -227,8 +259,27 @@ private final class PermissionRow {
 
     func setGranted(_ granted: Bool) {
         dot.layer?.backgroundColor = (granted ? NSColor.systemGreen : NSColor.systemOrange).cgColor
-        button.title = granted ? "Granted" : "Grant"
-        button.isEnabled = !granted
+        if granted {
+            pending = false
+            button.title = "Granted"
+            button.isEnabled = false
+            rationale.stringValue = permission.rationale
+        } else if pending {
+            button.title = "Waiting…"
+            button.isEnabled = false
+        } else {
+            button.title = "Grant"
+            button.isEnabled = true
+        }
+    }
+
+    func setPending(_ value: Bool) {
+        pending = value
+        if value {
+            button.title = "Waiting…"
+            button.isEnabled = false
+            rationale.stringValue = permission.pendingGuidance
+        }
     }
 }
 
