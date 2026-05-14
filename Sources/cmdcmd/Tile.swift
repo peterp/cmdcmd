@@ -1,51 +1,15 @@
 import AppKit
-import ScreenCaptureKit
-import CoreImage
-import CoreMedia
-import CoreVideo
+import CoreGraphics
 
-
-final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
+final class Tile: NSObject {
     static let colorNames = ["green", "blue", "red", "yellow", "orange", "purple"]
 
     private static let cacheLock = NSLock()
     private static var frameCache: [CGWindowID: CGImage] = [:]
     private static var frameCacheOrder: [CGWindowID] = []
     private static let frameCacheLimit = 100
-    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-    private static let cacheQueue = DispatchQueue(label: "cmdcmd.tile.cache", qos: .utility)
-
-    // SCContentFilter / SCStream init have crashed (objc_retain of an
-    // SCWindow during concurrent copyWithZone) when tiles install in
-    // parallel. Serialize the synchronous setup; async work still overlaps.
-    private static let setupQueue = DispatchQueue(label: "cmdcmd.tile.setup", qos: .userInteractive)
-
-    private static func makeFilter(for window: SCWindow) async -> SCContentFilter {
-        await withCheckedContinuation { cont in
-            setupQueue.async {
-                cont.resume(returning: SCContentFilter(desktopIndependentWindow: window))
-            }
-        }
-    }
-
-    private static func makeStream(
-        filter: SCContentFilter,
-        configuration: SCStreamConfiguration,
-        output: Tile,
-        sampleHandlerQueue: DispatchQueue
-    ) async throws -> SCStream {
-        try await withCheckedThrowingContinuation { cont in
-            setupQueue.async {
-                let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
-                do {
-                    try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
-                    cont.resume(returning: stream)
-                } catch {
-                    cont.resume(throwing: error)
-                }
-            }
-        }
-    }
+    private static let captureQueue = DispatchQueue(label: "cmdcmd.tile.capture", qos: .userInteractive, attributes: .concurrent)
+    private static let pollInterval: TimeInterval = 1.0 / 15.0
 
     static func cachedFrame(for id: CGWindowID) -> CGImage? {
         cacheLock.lock(); defer { cacheLock.unlock() }
@@ -86,7 +50,7 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 
-    var scWindow: SCWindow
+    var window: WindowInfo
     let ownerPID: pid_t
     let layer: CALayer
     private let content: CALayer
@@ -97,30 +61,15 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
     private let idleDot: CALayer
     private var lastSignificantChangeAt: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private(set) var isIdle: Bool = false
-    private var stream: SCStream?
+    private var pollTimer: DispatchSourceTimer?
     private var cancelled = false
     private var hasRenderedFrame = false
     private var hasRenderedLiveFrame = false
-    private var lastPixelBuffer: CVPixelBuffer?
     var suppressFrames = false
-    private let queue = DispatchQueue(label: "cmdcmd.tile", qos: .userInteractive)
-    private var restartAttempts = 0
-    private static let maxRestartAttempts = 6
-    // Frame-delivery diagnostics. Updated only on the SCStream sample queue.
-    private var loggedFirstDelivery = false
     private var loggedFirstLiveFrame = false
-    private var completeCount = 0
-    private var skippedIdle = 0
-    private var skippedBlank = 0
-    private var skippedSuspended = 0
-    private var skippedOther = 0
-    private var lastSkipLogAt: CFAbsoluteTime = 0
-    private var lastHeartbeatLogAt: CFAbsoluteTime = 0
-    private var lastFrameAt: CFAbsoluteTime = 0
-    private var watchdog: DispatchSourceTimer?
 
-    init(scWindow: SCWindow, ownerPID: pid_t) {
-        self.scWindow = scWindow
+    init(window: WindowInfo, ownerPID: pid_t) {
+        self.window = window
         self.ownerPID = ownerPID
 
         let outer = CALayer()
@@ -188,10 +137,14 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         self.titlePill = pill
         self.titleText = pillText
         self.idleDot = dot
-        self.windowTitle = scWindow.title ?? ""
+        // kCGWindowName needs Screen Recording on macOS 12.3+, which we no
+        // longer ask for. Fall back to the owning-app name so the pill still
+        // labels each tile.
+        let rawTitle = (window.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        self.windowTitle = rawTitle.isEmpty ? window.applicationName : rawTitle
         super.init()
 
-        if let cached = Tile.cachedFrame(for: CGWindowID(scWindow.windowID)) {
+        if let cached = Tile.cachedFrame(for: window.windowID) {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             inner.contents = cached
@@ -386,304 +339,93 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         CATransaction.commit()
     }
 
-    private static let thumbFloor: CGFloat = 700
-    private static let thumbCeiling: CGFloat = 2200
-    private static let thumbHeadroom: CGFloat = 1.5
-
-    /// Target snapshot resolution (longest side, in pixels) sized to the tile's
-    /// current on-screen footprint. Many small tiles → smaller thumbs; a few
-    /// large tiles → sharper thumbs. Live capture is unaffected and always
-    /// runs at full window resolution.
-    private func currentThumbMaxDim() -> CGFloat {
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
-        let longest = max(layer.frame.width, layer.frame.height)
-        guard longest > 0 else { return 1400 }
-        let target = longest * scale * Self.thumbHeadroom
-        return max(Self.thumbFloor, min(Self.thumbCeiling, target))
-    }
-
-    private func captureConfig(maxDim: CGFloat? = nil) -> SCStreamConfiguration {
-        let config = SCStreamConfiguration()
-        let scale = NSScreen.main?.backingScaleFactor ?? 2
-        var w = scWindow.frame.width * scale
-        var h = scWindow.frame.height * scale
-        if let m = maxDim {
-            let largest = max(w, h)
-            if largest > m {
-                let factor = m / largest
-                w *= factor
-                h *= factor
-            }
-        }
-        config.width = max(64, Int(w))
-        config.height = max(64, Int(h))
-        config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.showsCursor = false
-        config.scalesToFit = true
-        config.ignoreShadowsSingleWindow = true
-        return config
-    }
-
-    private func captureImageSafely(filter: SCContentFilter, config: SCStreamConfiguration) async throws -> CGImage {
-        try await withCheckedThrowingContinuation { cont in
-            SCScreenshotManager.captureImage(contentFilter: filter, configuration: config) { image, error in
-                if let image {
-                    cont.resume(returning: image)
-                } else {
-                    cont.resume(throwing: error ?? NSError(
-                        domain: "cmdcmd.Tile",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "captureImage returned no image"]))
-                }
-            }
-        }
-    }
-
+    /// Single-shot SkyLight capture used to seed the tile before the live
+    /// poll has a frame. Cheap to call: returns nil and lets the cached
+    /// thumbnail keep showing if SkyLight has nothing for this window yet.
     func snapshot() async {
         if cancelled || hasRenderedLiveFrame { return }
-        let filter = await Tile.makeFilter(for: scWindow)
+        guard let sl = SkyLightCapture.shared else { return }
+        let wid = window.windowID
+        let image: CGImage? = await withCheckedContinuation { (cont: CheckedContinuation<CGImage?, Never>) in
+            Tile.captureQueue.async { cont.resume(returning: sl.captureImage(windowID: wid)) }
+        }
+        guard let image else { return }
         if cancelled || hasRenderedLiveFrame { return }
-        let config = captureConfig(maxDim: currentThumbMaxDim())
-        do {
-            let image = try await captureImageSafely(filter: filter, config: config)
-            if cancelled || hasRenderedLiveFrame { return }
-            Tile.setCachedFrame(image, for: CGWindowID(scWindow.windowID))
-            await MainActor.run {
-                guard !self.hasRenderedLiveFrame else { return }
+        Tile.setCachedFrame(image, for: wid)
+        await MainActor.run {
+            guard !self.hasRenderedLiveFrame else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.content.contents = image
+            CATransaction.commit()
+            self.hasRenderedFrame = true
+            self.lastSignificantChangeAt = CFAbsoluteTimeGetCurrent()
+        }
+    }
+
+    /// Start a 15 fps SkyLight poll. No-op if SkyLight is unavailable on this
+    /// macOS — tiles then just keep their cached thumbnail.
+    func start() async {
+        if cancelled { return }
+        guard let sl = SkyLightCapture.shared else { return }
+        await MainActor.run { self.startPolling(sl: sl) }
+    }
+
+    private func startPolling(sl: SkyLightCapture) {
+        stopPolling()
+        let wid = window.windowID
+        let t = DispatchSource.makeTimerSource(queue: Tile.captureQueue)
+        t.schedule(deadline: .now(), repeating: Tile.pollInterval, leeway: .milliseconds(10))
+        t.setEventHandler { [weak self] in
+            guard let self, !self.cancelled, !self.suppressFrames else { return }
+            guard let image = sl.captureImage(windowID: wid) else { return }
+            Tile.setCachedFrame(image, for: wid)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.cancelled, !self.suppressFrames else { return }
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
                 self.content.contents = image
                 CATransaction.commit()
                 self.hasRenderedFrame = true
+                self.hasRenderedLiveFrame = true
                 self.lastSignificantChangeAt = CFAbsoluteTimeGetCurrent()
+                if !self.loggedFirstLiveFrame {
+                    self.loggedFirstLiveFrame = true
+                    Log.write("tile first live frame wid=\(wid) size=\(image.width)x\(image.height)")
+                }
             }
-        } catch {
-            Log.write("tile snapshot failed wid=\(scWindow.windowID): \(error)")
         }
+        t.resume()
+        pollTimer = t
     }
 
-    func start() async {
-        if cancelled { return }
-        let filter = await Tile.makeFilter(for: scWindow)
-        if cancelled { return }
-        let config = captureConfig()
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-        config.queueDepth = 3
-
-        do {
-            let s = try await Tile.makeStream(filter: filter, configuration: config, output: self, sampleHandlerQueue: queue)
-            if cancelled { return }
-            try await s.startCapture()
-            if cancelled {
-                try? await s.stopCapture()
-                return
-            }
-            self.stream = s
-            let title = scWindow.title ?? ""
-            let bid = scWindow.owningApplication?.bundleIdentifier ?? "?"
-            Log.write("tile stream started wid=\(scWindow.windowID) bid=\(bid) title=\"\(title)\" size=\(config.width)x\(config.height) attempt=\(restartAttempts)")
-            startWatchdog()
-        } catch {
-            Log.write("tile start failed wid=\(scWindow.windowID): \(Tile.describe(error))")
-        }
-    }
-
-    private static func describe(_ error: Error) -> String {
-        let ns = error as NSError
-        var info = "domain=\(ns.domain) code=\(ns.code)"
-        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
-            info += " underlying=\(underlying.domain)/\(underlying.code)"
-        }
-        if let reason = ns.localizedFailureReason {
-            info += " reason=\"\(reason)\""
-        }
-        info += " desc=\"\(ns.localizedDescription)\""
-        return info
-    }
-
-    private func cacheLastFrameDeferred() {
-        let id = CGWindowID(self.scWindow.windowID)
-        let q = self.queue
-        let cap = currentThumbMaxDim()
-        Tile.cacheQueue.async {
-            var pb: CVPixelBuffer?
-            q.sync {
-                pb = self.lastPixelBuffer
-                self.lastPixelBuffer = nil
-            }
-            guard let pb else { return }
-            let ci = CIImage(cvPixelBuffer: pb)
-            let extent = ci.extent
-            let largest = max(extent.width, extent.height)
-            let factor = largest > cap ? cap / largest : 1
-            let scaled = factor < 1
-                ? ci.transformed(by: CGAffineTransform(scaleX: factor, y: factor))
-                : ci
-            if let cg = Tile.ciContext.createCGImage(scaled, from: scaled.extent) {
-                Tile.setCachedFrame(cg, for: id)
-            }
-        }
+    private func stopPolling() {
+        pollTimer?.cancel()
+        pollTimer = nil
     }
 
     func stop() async {
         cancelled = true
         suppressFrames = true
-        stopWatchdog()
-        cacheLastFrameDeferred()
-        guard let s = stream else { return }
-        self.stream = nil
-        try? await s.stopCapture()
-    }
-
-    /// Underlying window resized after capture started. Tear down the existing
-    /// stream (its config is fixed at the old dimensions) and rebuild from the
-    /// fresh `scWindow.frame`.
-    func refreshAfterResize(live: Bool) async {
-        if cancelled { return }
-        if let s = stream {
-            self.stream = nil
-            stopWatchdog()
-            try? await s.stopCapture()
-        }
-        if cancelled { return }
-        hasRenderedLiveFrame = false
-        loggedFirstLiveFrame = false
-        await snapshot()
-        if live && !cancelled {
-            await start()
-        }
+        stopPolling()
     }
 
     func stopSync(group: DispatchGroup) {
         cancelled = true
         suppressFrames = true
-        stopWatchdog()
-        cacheLastFrameDeferred()
-        guard let s = stream else { return }
-        self.stream = nil
-        group.enter()
-        s.stopCapture { _ in group.leave() }
+        stopPolling()
     }
 
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+    /// Underlying window resized after capture started. The polled SkyLight
+    /// path reads the current backing store on every tick, so we just need to
+    /// reset the "first frame" gates and let the next poll repaint.
+    func refreshAfterResize(live: Bool) async {
         if cancelled { return }
-        guard type == .screen, sampleBuffer.isValid,
-              let pixelBuffer = sampleBuffer.imageBuffer,
-              let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else { return }
-
-        let attachments = (CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]])?.first
-        let statusRaw = (attachments?[.status] as? Int).flatMap(SCFrameStatus.init(rawValue:))
-        if !loggedFirstDelivery {
-            loggedFirstDelivery = true
-            Log.write("tile first delivery wid=\(scWindow.windowID) status=\(Tile.describe(statusRaw))")
-        }
-        if statusRaw == .idle || statusRaw == .blank || statusRaw == .suspended {
-            switch statusRaw {
-            case .idle: skippedIdle += 1
-            case .blank: skippedBlank += 1
-            case .suspended: skippedSuspended += 1
-            default: skippedOther += 1
-            }
-            maybeLogSkipSummary()
-            return
-        }
-        if statusRaw == .complete {
-            completeCount += 1
-            lastFrameAt = CFAbsoluteTimeGetCurrent()
-            maybeLogHeartbeat()
-        }
-
-        var significantChange = false
-        if let attachments {
-            let dirtyRectsRaw = attachments[.dirtyRects] as? [[String: Any]] ?? []
-            var dirtyArea: CGFloat = 0
-            for d in dirtyRectsRaw {
-                if let r = CGRect(dictionaryRepresentation: d as CFDictionary) {
-                    dirtyArea += r.width * r.height
-                }
-            }
-            var totalArea: CGFloat = 0
-            if let crDict = attachments[.contentRect] as? [String: Any],
-               let cr = CGRect(dictionaryRepresentation: crDict as CFDictionary) {
-                totalArea = cr.width * cr.height
-            }
-            if totalArea > 0, dirtyArea / totalArea > 0.005 {
-                lastSignificantChangeAt = CFAbsoluteTimeGetCurrent()
-                significantChange = true
-            }
-        }
-
-        self.lastPixelBuffer = pixelBuffer
-        if restartAttempts != 0 { restartAttempts = 0 }
-
-        if !loggedFirstLiveFrame {
-            loggedFirstLiveFrame = true
-            let w = CVPixelBufferGetWidth(pixelBuffer)
-            let h = CVPixelBufferGetHeight(pixelBuffer)
-            Log.write("tile first live frame wid=\(scWindow.windowID) status=\(Tile.describe(statusRaw)) size=\(w)x\(h) skipped(idle=\(skippedIdle) blank=\(skippedBlank) suspended=\(skippedSuspended) other=\(skippedOther))")
-        }
-
-        if suppressFrames { return }
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !self.suppressFrames else { return }
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            self.content.contents = surface
-            CATransaction.commit()
-            self.hasRenderedFrame = true
-            self.hasRenderedLiveFrame = true
-        }
-    }
-
-    private func maybeLogSkipSummary() {
-        let now = CFAbsoluteTimeGetCurrent()
-        if lastSkipLogAt == 0 { lastSkipLogAt = now; return }
-        if now - lastSkipLogAt < 5 { return }
-        lastSkipLogAt = now
-        Log.write("tile skip summary wid=\(scWindow.windowID) live=\(loggedFirstLiveFrame) complete=\(completeCount) idle=\(skippedIdle) blank=\(skippedBlank) suspended=\(skippedSuspended) other=\(skippedOther)")
-    }
-
-    private func maybeLogHeartbeat() {
-        let now = CFAbsoluteTimeGetCurrent()
-        if lastHeartbeatLogAt == 0 { lastHeartbeatLogAt = now; return }
-        if now - lastHeartbeatLogAt < 5 { return }
-        lastHeartbeatLogAt = now
-        Log.write("tile heartbeat wid=\(scWindow.windowID) complete=\(completeCount) skipped(idle=\(skippedIdle) blank=\(skippedBlank) suspended=\(skippedSuspended) other=\(skippedOther))")
-    }
-
-    /// Fires every 5s; if no frame arrived in the last 5s, log a stall.
-    private func startWatchdog() {
-        stopWatchdog()
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 5, repeating: 5)
-        t.setEventHandler { [weak self] in
-            guard let self, !self.cancelled else { return }
-            let now = CFAbsoluteTimeGetCurrent()
-            let elapsed = self.lastFrameAt == 0 ? -1 : now - self.lastFrameAt
-            if self.lastFrameAt == 0 || elapsed > 5 {
-                Log.write("tile stall wid=\(self.scWindow.windowID) sinceLastFrame=\(String(format: "%.1f", elapsed))s complete=\(self.completeCount) skipped(idle=\(self.skippedIdle) blank=\(self.skippedBlank) suspended=\(self.skippedSuspended) other=\(self.skippedOther)) streamAlive=\(self.stream != nil)")
-            }
-        }
-        t.resume()
-        watchdog = t
-    }
-
-    private func stopWatchdog() {
-        watchdog?.cancel()
-        watchdog = nil
-    }
-
-    private static func describe(_ status: SCFrameStatus?) -> String {
-        guard let status else { return "nil" }
-        switch status {
-        case .complete: return "complete"
-        case .idle: return "idle"
-        case .blank: return "blank"
-        case .suspended: return "suspended"
-        case .started: return "started"
-        case .stopped: return "stopped"
-        @unknown default: return "raw(\(status.rawValue))"
+        hasRenderedLiveFrame = false
+        loggedFirstLiveFrame = false
+        await snapshot()
+        if live && !cancelled, pollTimer == nil {
+            await start()
         }
     }
 
@@ -706,53 +448,5 @@ final class Tile: NSObject, SCStreamOutput, SCStreamDelegate {
         CATransaction.setAnimationDuration(0.25)
         idleDot.opacity = target
         CATransaction.commit()
-    }
-
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        let title = scWindow.title ?? ""
-        let bid = scWindow.owningApplication?.bundleIdentifier ?? "?"
-        Log.write("tile stream stopped wid=\(scWindow.windowID) bid=\(bid) title=\"\(title)\" hadFrame=\(hasRenderedLiveFrame) suppressed=\(suppressFrames) cancelled=\(cancelled) complete=\(completeCount) skipped(idle=\(skippedIdle) blank=\(skippedBlank) suspended=\(skippedSuspended) other=\(skippedOther)): \(Tile.describe(error))")
-        self.stream = nil
-        stopWatchdog()
-        promoteLastFrameToLayer()
-        if cancelled { return }
-        let attempt = restartAttempts + 1
-        restartAttempts = attempt
-        guard attempt <= Self.maxRestartAttempts else {
-            Log.write("tile giving up restart wid=\(scWindow.windowID) after \(attempt) attempts")
-            return
-        }
-        let delay = min(5.0, 0.5 * Double(attempt))
-        Log.write("tile scheduling restart wid=\(scWindow.windowID) attempt=\(attempt) delay=\(delay)s")
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard let self, !self.cancelled, self.stream == nil else { return }
-            await self.start()
-        }
-    }
-
-    /// Convert the most recent pixel buffer into a CGImage and assign it to the
-    /// tile's layer. Used when the live stream stops so the tile retains a
-    /// stable image instead of a recycled IOSurface.
-    private func promoteLastFrameToLayer() {
-        let q = self.queue
-        Tile.cacheQueue.async { [weak self] in
-            guard let self else { return }
-            var pb: CVPixelBuffer?
-            q.sync {
-                pb = self.lastPixelBuffer
-            }
-            guard let pb else { return }
-            let ci = CIImage(cvPixelBuffer: pb)
-            guard let cg = Tile.ciContext.createCGImage(ci, from: ci.extent) else { return }
-            Tile.setCachedFrame(cg, for: CGWindowID(self.scWindow.windowID))
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.cancelled else { return }
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                self.content.contents = cg
-                CATransaction.commit()
-            }
-        }
     }
 }

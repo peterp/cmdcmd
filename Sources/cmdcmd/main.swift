@@ -1,6 +1,5 @@
 import AppKit
 import CoreGraphics
-import ScreenCaptureKit
 import Sparkle
 
 let args = CommandLine.arguments
@@ -142,9 +141,6 @@ appDelegate.settingsFactory = {
 }
 
 func startApp() {
-    Task {
-        _ = try? await SCShareableContent.current
-    }
     let fire = {
         overlay.toggle()
         dumpState(tracker: tracker)
